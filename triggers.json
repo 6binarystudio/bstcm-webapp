@@ -1,0 +1,80 @@
+{
+  "triggers": [
+    {
+      "phrase": "the peacock",
+      "audioFile": "audio/sa.mp3"
+    },
+    {
+      "phrase": "a try",
+      "audioFile": "audio/sa.mp3"
+    },
+    {
+      "phrase": "the second",
+      "audioFile": "audio/ri.mp3"
+    },
+    {
+      "phrase": "different to",
+      "audioFile": "audio/sari.mp3"
+    },
+    {
+      "phrase": "the third",
+      "audioFile": "audio/ga.mp3"
+    },
+    {
+      "phrase": "of sounds",
+      "audioFile": "audio/sariga.mp3"
+    },
+    {
+      "phrase": "shortened from",
+      "audioFile": "audio/ma.mp3"
+    },
+    {
+      "phrase": "halfway there",
+      "audioFile": "audio/sarigama.mp3"
+    },
+    {
+      "phrase": "bird",
+      "audioFile": "audio/pa.mp3"
+    },
+    {
+      "phrase": "white key",
+      "audioFile": "audio/sarigamapa.mp3"
+    },
+    {
+      "phrase": "horse",
+      "audioFile": "audio/da.mp3"
+    },
+    {
+      "phrase": "end now",
+      "audioFile": "audio/sarigamapada.mp3"
+    },
+    {
+      "phrase": "last of the",
+      "audioFile": "audio/ni.mp3"
+    },
+    {
+      "phrase": "we started",
+      "audioFile": "audio/sarigamapadani.mp3"
+    },
+    {
+      "phrase": "a higher pitch",
+      "audioFile": "audio/sa_high.mp3"
+    },
+    {
+      "phrase": "the staircase",
+      "audioFile": "audio/sarigamapadanisa.mp3"
+    },
+    {
+      "phrase": "a dot above",
+      "audioFile": "audio/sasasa.mp3"
+    },
+    {
+      "phrase": "every octave",
+      "audioFile": "audio/three_octaves.mp3"
+    },
+    {
+      "phrase": "to play",
+      "audioFile": "audio/lambodara.mp3"
+    }
+  ]
+}

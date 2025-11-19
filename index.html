@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Offline Speech-to-Text with Trigger Detection</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎤 Offline Speech Recognition</h1>
+            <p class="subtitle">Trigger phrase detection with audio playback</p>
+        </header>
+
+        <div class="status-panel">
+            <div class="status-indicator" id="statusIndicator">
+                <span class="status-dot"></span>
+                <span id="statusText">Initializing...</span>
+            </div>
+            <div class="model-status" id="modelStatus">Loading model...</div>
+        </div>
+
+        <div class="controls">
+            <button id="startBtn" class="btn btn-primary" disabled>Start Listening</button>
+            <button id="stopBtn" class="btn btn-secondary" disabled>Stop Listening</button>
+            <button id="clearBtn" class="btn btn-clear">Clear Transcript</button>
+        </div>
+
+        <div class="settings">
+            <div class="setting-group full-width">
+                <label for="pauseDuration">Pause Duration (ms):</label>
+                <input type="number" id="pauseDuration" value="1500" min="500" max="5000" step="100">
+            </div>
+        </div>
+
+
+        <div class="transcript-panel">
+            <h2>Transcript</h2>
+            <div id="transcript" class="transcript-content"></div>
+        </div>
+
+        <div class="trigger-panel">
+            <h2>Trigger Events</h2>
+            <div id="triggerLog" class="trigger-log"></div>
+        </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>
+

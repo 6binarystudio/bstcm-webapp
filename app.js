@@ -1,0 +1,875 @@
+// Speech Recognition Web App using Web Speech API
+
+class SpeechRecognitionApp {
+    constructor() {
+        this.recognizer = null;
+        this.isListening = false;
+        this.isPlaying = false;
+        this.audioContext = null;
+        this.triggerPhrases = []; // Array of {phrase: string, audioFile: File/string, audioUrl: string}
+        this.pauseDuration = 1500;
+        this.lastSpeechTime = 0;
+        this.pauseTimer = null;
+        this.currentTranscript = '';
+        this.words = [];
+        this.triggerDetectedInCurrentSession = false;
+        this.detectedTrigger = null; // Store which trigger was detected
+        
+        this.initializeElements();
+        this.setupEventListeners();
+        this.initializeAudioContext();
+        this.loadModel();
+        // Load defaults after a short delay to ensure audio context is ready
+        setTimeout(() => this.loadDefaultTriggers(), 100);
+    }
+
+    initializeElements() {
+        this.statusIndicator = document.getElementById('statusIndicator');
+        this.statusText = document.getElementById('statusText');
+        this.statusDot = this.statusIndicator.querySelector('.status-dot');
+        this.modelStatus = document.getElementById('modelStatus');
+        this.startBtn = document.getElementById('startBtn');
+        this.stopBtn = document.getElementById('stopBtn');
+        this.clearBtn = document.getElementById('clearBtn');
+        this.transcriptDiv = document.getElementById('transcript');
+        this.triggerLog = document.getElementById('triggerLog');
+        this.pauseDurationInput = document.getElementById('pauseDuration');
+    }
+
+    setupEventListeners() {
+        this.startBtn.addEventListener('click', () => this.startListening());
+        this.stopBtn.addEventListener('click', () => this.stopListening());
+        this.clearBtn.addEventListener('click', () => this.clearTranscript());
+        this.pauseDurationInput.addEventListener('change', (e) => {
+            this.pauseDuration = parseInt(e.target.value);
+        });
+    }
+
+    loadDefaultTriggers() {
+        // Load default trigger phrases if any exist in localStorage
+        const saved = localStorage.getItem('triggerPhrases');
+        if (saved) {
+            try {
+                const parsed = JSON.parse(saved);
+                // Restore triggers with proper structure (File objects can't be saved)
+                this.triggerPhrases = parsed.map((t, index) => ({
+                    id: t.id || Date.now() + index + Math.random(), // Use saved ID or generate new one
+                    phrase: t.phrase,
+                    audioFile: null, // File objects can't be restored from localStorage
+                    audioUrl: t.audioUrl || null,
+                    isDefault: t.isDefault || false
+                }));
+                
+                // If we have default triggers without audio URLs (blob URLs don't persist),
+                // regenerate the audio for them
+                const needsRegeneration = this.triggerPhrases.some(t => t.isDefault && !t.audioUrl);
+                if (needsRegeneration) {
+                    this.regenerateDefaultAudio();
+                }
+            } catch (e) {
+                console.error('Error loading saved triggers:', e);
+                // If loading fails, initialize defaults
+                this.initializeDefaultTriggers();
+            }
+        } else {
+            // No saved triggers, initialize defaults
+            this.initializeDefaultTriggers();
+        }
+    }
+
+    async initializeDefaultTriggers() {
+        // First, try to load packaged triggers from triggers.json
+        try {
+            const response = await fetch('./triggers.json');
+            if (response.ok) {
+                const config = await response.json();
+                if (config.triggers && config.triggers.length > 0) {
+                    // Load packaged triggers with audio files
+                    console.log(`Loading ${config.triggers.length} triggers from triggers.json`);
+                    for (const trigger of config.triggers) {
+                        try {
+                            // Check if audio file exists
+                            const audioResponse = await fetch(trigger.audioFile, { method: 'HEAD' });
+                            if (audioResponse.ok) {
+                                // Audio file exists, use it
+                                console.log(`✓ Loading trigger: "${trigger.phrase}" with audio: ${trigger.audioFile}`);
+                                this.addTriggerPhrase(trigger.phrase, trigger.audioFile, true);
+                            } else {
+                                // Audio file not found, generate tone as fallback
+                                console.warn(`✗ Audio file not found (${audioResponse.status}): ${trigger.audioFile} for "${trigger.phrase}"`);
+                                await this.addTriggerWithFallback(trigger.phrase);
+                            }
+                        } catch (error) {
+                            console.warn(`✗ Audio file not found for "${trigger.phrase}", using generated tone:`, error);
+                            await this.addTriggerWithFallback(trigger.phrase);
+                        }
+                    }
+                    console.log(`✅ Loaded ${this.triggerPhrases.length} triggers total`);
+                    return; // Successfully loaded packaged triggers
+                }
+            }
+        } catch (error) {
+            console.log('No triggers.json found or error loading it, using built-in defaults:', error);
+        }
+
+        // Fallback to built-in default triggers with generated tones
+        const defaultTriggers = [
+            { phrase: 'hello assistant', frequency: 440, duration: 0.5 },
+            { phrase: 'good morning', frequency: 523, duration: 0.5 },
+            { phrase: 'good afternoon', frequency: 587, duration: 0.5 },
+            { phrase: 'good evening', frequency: 659, duration: 0.5 },
+            { phrase: 'thank you', frequency: 698, duration: 0.4 },
+            { phrase: 'how are you', frequency: 784, duration: 0.6 }
+        ];
+
+        // Generate audio for each default trigger
+        for (const trigger of defaultTriggers) {
+            await this.addTriggerWithFallback(trigger.phrase, trigger.frequency, trigger.duration);
+        }
+    }
+
+    async addTriggerWithFallback(phrase, frequency = 440, duration = 0.5) {
+        try {
+            const audioUrl = await this.generateAudioTone(frequency, duration);
+            this.addTriggerPhrase(phrase, audioUrl, true); // Mark as default
+        } catch (error) {
+            console.error(`Error generating audio for "${phrase}":`, error);
+            // Add trigger without audio (will use text-to-speech fallback)
+            this.addTriggerPhrase(phrase, null, true);
+        }
+    }
+
+    async regenerateDefaultAudio() {
+        // First try to reload from triggers.json if available
+        try {
+            const response = await fetch('./triggers.json');
+            if (response.ok) {
+                const config = await response.json();
+                if (config.triggers) {
+                    const triggerMap = {};
+                    config.triggers.forEach(t => {
+                        triggerMap[t.phrase] = t.audioFile;
+                    });
+
+                    for (const trigger of this.triggerPhrases) {
+                        if (trigger.isDefault && !trigger.audioUrl && triggerMap[trigger.phrase]) {
+                            try {
+                                // Check if audio file exists
+                                const audioResponse = await fetch(triggerMap[trigger.phrase], { method: 'HEAD' });
+                                if (audioResponse.ok) {
+                                    trigger.audioUrl = triggerMap[trigger.phrase];
+                                }
+                            } catch (error) {
+                                // File not found, will fall through to generated tone
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            console.log('Could not reload from triggers.json:', error);
+        }
+
+        // Fallback: Regenerate audio tones for default triggers that lost their blob URLs
+        const defaultFrequencies = {
+            'hello assistant': 440,
+            'good morning': 523,
+            'good afternoon': 587,
+            'good evening': 659,
+            'thank you': 698,
+            'how are you': 784
+        };
+
+        for (const trigger of this.triggerPhrases) {
+            if (trigger.isDefault && !trigger.audioUrl && defaultFrequencies[trigger.phrase]) {
+                try {
+                    const frequency = defaultFrequencies[trigger.phrase];
+                    const audioUrl = await this.generateAudioTone(frequency, 0.5);
+                    trigger.audioUrl = audioUrl;
+                } catch (error) {
+                    console.error(`Error regenerating audio for "${trigger.phrase}":`, error);
+                }
+            }
+        }
+        this.saveTriggers();
+    }
+
+    async generateAudioTone(frequency = 440, duration = 0.5) {
+        // Generate a simple audio tone using Web Audio API
+        return new Promise(async (resolve, reject) => {
+            try {
+                if (!this.audioContext) {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                
+                // Resume audio context if suspended (required by some browsers)
+                if (this.audioContext.state === 'suspended') {
+                    await this.audioContext.resume();
+                }
+
+                const sampleRate = this.audioContext.sampleRate;
+                const numSamples = Math.floor(sampleRate * duration);
+                const buffer = this.audioContext.createBuffer(1, numSamples, sampleRate);
+                const data = buffer.getChannelData(0);
+
+                // Generate a sine wave with a fade in/out to avoid clicks
+                for (let i = 0; i < numSamples; i++) {
+                    const t = i / sampleRate;
+                    // Apply envelope (fade in/out)
+                    const fadeIn = Math.min(1, i / (sampleRate * 0.05)); // 50ms fade in
+                    const fadeOut = Math.min(1, (numSamples - i) / (sampleRate * 0.05)); // 50ms fade out
+                    const envelope = fadeIn * fadeOut;
+                    data[i] = Math.sin(2 * Math.PI * frequency * t) * envelope * 0.3;
+                }
+
+                // Convert AudioBuffer to WAV blob
+                const wav = this.audioBufferToWav(buffer);
+                const blob = new Blob([wav], { type: 'audio/wav' });
+                const url = URL.createObjectURL(blob);
+                
+                resolve(url);
+            } catch (error) {
+                reject(error);
+            }
+        });
+    }
+
+    audioBufferToWav(buffer) {
+        const length = buffer.length;
+        const sampleRate = buffer.sampleRate;
+        const arrayBuffer = new ArrayBuffer(44 + length * 2);
+        const view = new DataView(arrayBuffer);
+        const channels = 1;
+
+        // WAV header
+        const writeString = (offset, string) => {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        };
+
+        writeString(0, 'RIFF');
+        view.setUint32(4, 36 + length * 2, true);
+        writeString(8, 'WAVE');
+        writeString(12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, channels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * channels * 2, true);
+        view.setUint16(32, channels * 2, true);
+        view.setUint16(34, 16, true);
+        writeString(36, 'data');
+        view.setUint32(40, length * 2, true);
+
+        // Convert float samples to 16-bit PCM
+        let offset = 44;
+        for (let i = 0; i < length; i++) {
+            const sample = Math.max(-1, Math.min(1, buffer.getChannelData(0)[i]));
+            view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+            offset += 2;
+        }
+
+        return arrayBuffer;
+    }
+
+    saveTriggers() {
+        // Save trigger phrases to localStorage (without File objects, just URLs)
+        // Note: blob URLs won't persist across page reloads, only file paths/URLs will
+        // For default triggers with generated audio, we mark them with a special flag
+        const toSave = this.triggerPhrases.map(t => ({
+            id: t.id,
+            phrase: t.phrase,
+            audioUrl: t.audioUrl && !t.audioUrl.startsWith('blob:') ? t.audioUrl : null,
+            isDefault: t.isDefault || false // Mark default triggers
+        }));
+        localStorage.setItem('triggerPhrases', JSON.stringify(toSave));
+    }
+
+    addTriggerPhrase(phrase = '', audioFile = null, isDefault = false) {
+        const trigger = {
+            id: Date.now() + Math.random(),
+            phrase: phrase.toLowerCase().trim(),
+            audioFile: audioFile,
+            audioUrl: null,
+            isDefault: isDefault
+        };
+
+        if (audioFile) {
+            if (audioFile instanceof File) {
+                trigger.audioUrl = URL.createObjectURL(audioFile);
+            } else {
+                trigger.audioUrl = audioFile;
+            }
+        }
+
+        this.triggerPhrases.push(trigger);
+        this.saveTriggers();
+    }
+
+    async initializeAudioContext() {
+        try {
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Resume audio context on user interaction (required by browsers)
+            const resumeAudio = async () => {
+                if (this.audioContext && this.audioContext.state === 'suspended') {
+                    await this.audioContext.resume();
+                }
+                document.removeEventListener('click', resumeAudio);
+                document.removeEventListener('touchstart', resumeAudio);
+            };
+            
+            document.addEventListener('click', resumeAudio, { once: true });
+            document.addEventListener('touchstart', resumeAudio, { once: true });
+        } catch (error) {
+            console.error('Error initializing audio context:', error);
+        }
+    }
+
+    async loadModel() {
+        try {
+            this.updateStatus('Loading model...', 'initializing');
+            this.modelStatus.textContent = 'Initializing speech recognition...';
+
+            // Use Web Speech API directly
+            this.setupWebSpeechAPI();
+        } catch (error) {
+            console.error('Error loading model:', error);
+            this.updateStatus('Error loading model', 'error');
+            this.modelStatus.textContent = `Error: ${error.message}`;
+        }
+    }
+
+    setupWebSpeechAPI() {
+        if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
+            this.updateStatus('Speech recognition not supported', 'error');
+            this.modelStatus.textContent = 'Your browser does not support speech recognition';
+            return;
+        }
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        this.recognizer = new SpeechRecognition();
+        this.recognizer.continuous = true;
+        this.recognizer.interimResults = true;
+        this.recognizer.lang = 'en-US';
+
+        this.recognizer.onresult = (event) => {
+            this.handleRecognitionResult(event);
+        };
+
+        this.recognizer.onerror = (event) => {
+            console.error('Recognition error:', event.error);
+            // Don't stop on 'no-speech' errors, they're normal
+            if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                console.warn('Speech recognition error:', event.error);
+            }
+        };
+
+        this.recognizer.onend = () => {
+            if (this.isListening && !this.isPlaying) {
+                // Auto-restart if we're still supposed to be listening
+                setTimeout(() => {
+                    if (this.isListening && !this.isPlaying) {
+                        this.recognizer.start();
+                    }
+                }, 100);
+            }
+        };
+
+        this.updateStatus('Using Web Speech API', 'ready');
+        this.modelStatus.textContent = 'Using browser speech recognition (requires internet)';
+        this.startBtn.disabled = false;
+    }
+
+    handleRecognitionResult(event) {
+        let interimTranscript = '';
+        let finalTranscript = '';
+        let hasFinalResult = false;
+        let hasInterimResult = false;
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            const transcript = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+                finalTranscript += transcript + ' ';
+                hasFinalResult = true;
+            } else {
+                interimTranscript += transcript;
+                hasInterimResult = true;
+            }
+        }
+
+        if (finalTranscript) {
+            this.processFinalTranscript(finalTranscript.trim());
+        }
+
+        this.updateTranscript(finalTranscript, interimTranscript);
+        this.lastSpeechTime = Date.now();
+        
+        // If we have interim results, we're still speaking - reset pause timer
+        if (hasInterimResult) {
+            this.resetPauseTimer();
+        }
+        
+        // If we have final results, check for trigger phrases
+        if (hasFinalResult) {
+            // Prioritize checking the NEW final transcript first (most recent speech)
+            // This prevents matching old triggers from earlier in the conversation
+            const newFinalLower = finalTranscript.toLowerCase().trim();
+            const fullTranscript = (this.currentTranscript + finalTranscript).toLowerCase().trim();
+            
+            console.log('🔍 Checking transcript for triggers:');
+            console.log('  - New final transcript (PRIORITY):', `"${newFinalLower}"`);
+            console.log('  - Full accumulated transcript:', `"${fullTranscript}"`);
+            console.log('  - Available triggers:', this.triggerPhrases.map(t => `"${t.phrase}"`));
+            
+            // Debug: Check if "the peacock" appears anywhere
+            if (newFinalLower.includes('peacock') || fullTranscript.includes('peacock')) {
+                console.warn('⚠️ WARNING: Found "peacock" in transcript!');
+                console.warn('   - In new final:', newFinalLower.includes('peacock'));
+                console.warn('   - In full:', fullTranscript.includes('peacock'));
+            } else {
+                console.log('✓ Confirmed: "peacock" NOT in transcript');
+            }
+            
+            // First, check the NEW final transcript chunk (most recent speech)
+            // This ensures we match what was just said, not old text
+            let matchedTrigger = null;
+            let matchFoundInNew = false;
+            
+            // Check new final transcript first (highest priority)
+            // Use strict matching - only match complete phrases, not partial words
+            for (const trigger of this.triggerPhrases) {
+                const triggerLower = trigger.phrase.toLowerCase().trim();
+                
+                // Method 1: Exact phrase match (most reliable)
+                // Check if transcript contains the complete trigger phrase as a substring
+                if (newFinalLower.includes(triggerLower)) {
+                    matchedTrigger = trigger;
+                    matchFoundInNew = true;
+                    console.log(`✅ MATCH FOUND (exact phrase) in NEW transcript! Trigger: "${trigger.phrase}"`);
+                    console.log(`   - Found in: "${newFinalLower}"`);
+                    break;
+                }
+                
+                // Method 2: Word boundary match (more flexible but still strict)
+                // Match all words of the trigger phrase in order, but allow word boundaries
+                const newWords = newFinalLower.split(/\s+/).map(w => w.replace(/[.,!?;:]/g, '').toLowerCase());
+                const triggerWords = triggerLower.split(/\s+/).map(tw => tw.replace(/[.,!?;:]/g, '').toLowerCase());
+                
+                // Find if all trigger words appear in order in the transcript
+                let wordIndex = 0;
+                let allWordsFound = true;
+                for (const triggerWord of triggerWords) {
+                    let found = false;
+                    // Look for this word starting from where we left off
+                    for (let i = wordIndex; i < newWords.length; i++) {
+                        const word = newWords[i];
+                        // Exact word match (not partial)
+                        if (word === triggerWord) {
+                            found = true;
+                            wordIndex = i + 1; // Move to next position
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        allWordsFound = false;
+                        break;
+                    }
+                }
+                
+                if (allWordsFound && triggerWords.length > 0) {
+                    matchedTrigger = trigger;
+                    matchFoundInNew = true;
+                    console.log(`✅ MATCH FOUND (word sequence) in NEW transcript! Trigger: "${trigger.phrase}"`);
+                    console.log(`   - Words matched in order: ${triggerWords.join(' -> ')}`);
+                    break;
+                }
+            }
+            
+            // If no match in new transcript, check full transcript (fallback)
+            // But only check the recent portion to avoid matching old triggers
+            if (!matchedTrigger) {
+                // Only check the last portion of the transcript (last 200 characters)
+                const recentTranscript = fullTranscript.slice(-200).toLowerCase();
+                
+                for (const trigger of this.triggerPhrases) {
+                    const triggerLower = trigger.phrase.toLowerCase().trim();
+                    
+                    // Only check recent portion of transcript
+                    if (recentTranscript.includes(triggerLower)) {
+                        matchedTrigger = trigger;
+                        console.log(`✅ MATCH FOUND in recent transcript! Trigger: "${trigger.phrase}"`);
+                        console.log(`   - Found in recent portion: "${recentTranscript}"`);
+                        break;
+                    }
+                }
+            }
+            
+            if (matchedTrigger) {
+                // Double-check: Verify the trigger phrase actually exists in the transcript
+                const triggerLower = matchedTrigger.phrase.toLowerCase().trim();
+                const actuallyInTranscript = newFinalLower.includes(triggerLower) || 
+                                            fullTranscript.slice(-200).includes(triggerLower);
+                
+                if (!actuallyInTranscript) {
+                    console.error('❌ ERROR: Trigger matched but phrase not found in transcript!');
+                    console.error('   - Matched trigger:', matchedTrigger.phrase);
+                    console.error('   - New transcript:', newFinalLower);
+                    console.error('   - This should not happen - skipping trigger');
+                    matchedTrigger = null; // Don't use this match
+                } else {
+                    // Trigger phrase detected - log it
+                    if (!this.triggerDetectedInCurrentSession || matchFoundInNew) {
+                        this.detectedTrigger = matchedTrigger;
+                        this.handleTriggerDetected(newFinalLower, matchedTrigger.phrase);
+                        this.triggerDetectedInCurrentSession = true;
+                        console.log('📝 Trigger logged in trigger events');
+                    }
+                }
+            }
+            
+            if (matchedTrigger) {
+                
+                // If no interim results, we might be pausing - start timer
+                if (!hasInterimResult) {
+                    this.resetPauseTimer();
+                    console.log(`⏱️ Starting pause timer (${this.pauseDuration}ms) for trigger: "${matchedTrigger.phrase}"`);
+                    this.pauseTimer = setTimeout(() => {
+                        if (this.isListening && !this.isPlaying) {
+                            console.log('⏱️ Pause timer expired, playing audio for:', matchedTrigger.phrase);
+                            this.playAudioForTrigger(matchedTrigger);
+                            this.triggerDetectedInCurrentSession = false;
+                            this.detectedTrigger = null;
+                        } else {
+                            console.log('⚠️ Cannot play audio - isListening:', this.isListening, 'isPlaying:', this.isPlaying);
+                        }
+                    }, this.pauseDuration);
+                } else {
+                    console.log('⏸️ Still speaking (interim results), waiting for pause...');
+                }
+            } else {
+                // No trigger in this chunk, reset trigger flag
+                console.log('❌ No trigger match found');
+                console.log('   - Checked new transcript:', newFinalLower);
+                this.triggerDetectedInCurrentSession = false;
+                this.detectedTrigger = null;
+            }
+        }
+    }
+
+    processFinalTranscript(text) {
+        // This method processes final transcript chunks
+        // Trigger detection and pause handling is now done in handleRecognitionResult
+        // to better track the flow of speech
+    }
+
+    handleTriggerDetected(transcript, triggerPhrase) {
+        const timestamp = new Date().toLocaleTimeString();
+        this.addTriggerLog(timestamp, transcript, triggerPhrase);
+    }
+
+    handlePause() {
+        // This method is called when speech pauses
+        // The pause detection is handled by the pause timer in handleTriggerDetected
+        // This is kept for potential future enhancements
+    }
+
+    resetPauseTimer() {
+        if (this.pauseTimer) {
+            clearTimeout(this.pauseTimer);
+            this.pauseTimer = null;
+        }
+    }
+
+    async playAudioForTrigger(trigger) {
+        if (this.isPlaying) {
+            console.log('Already playing audio, skipping');
+            return;
+        }
+
+        console.log('Playing audio for trigger:', trigger.phrase, 'Audio URL:', trigger.audioUrl);
+
+        if (!trigger.audioUrl) {
+            console.warn('No audio file associated with trigger:', trigger.phrase);
+            // Fallback to text-to-speech if no audio file
+            await this.speakResponse(trigger.phrase);
+            // Clear transcript after text-to-speech
+            this.currentTranscript = '';
+            this.words = [];
+            this.transcriptDiv.innerHTML = '';
+            console.log('🧹 Transcript cleared after text-to-speech');
+            return;
+        }
+
+        this.isPlaying = true;
+        this.updateStatus('Playing audio...', 'playing');
+        
+        // Stop listening temporarily
+        if (this.isListening) {
+            this.pauseListening();
+        }
+
+        try {
+            await this.playAudioFile(trigger.audioUrl);
+        } catch (error) {
+            console.error('Error playing audio:', error);
+            // Fallback to text-to-speech on error
+            await this.speakResponse(trigger.phrase);
+        } finally {
+            // Resume listening after playback
+            this.isPlaying = false;
+            
+            // Clear transcript after audio plays
+            this.currentTranscript = '';
+            this.words = [];
+            this.transcriptDiv.innerHTML = '';
+            console.log('🧹 Transcript cleared after audio playback');
+            
+            if (this.isListening) {
+                this.updateStatus('Listening...', 'listening');
+                this.resumeListening();
+            } else {
+                this.updateStatus('Ready', 'ready');
+            }
+        }
+    }
+
+    async playAudioFile(audioUrl) {
+        return new Promise(async (resolve, reject) => {
+            // Ensure audio context is resumed
+            if (this.audioContext && this.audioContext.state === 'suspended') {
+                try {
+                    await this.audioContext.resume();
+                } catch (e) {
+                    console.warn('Could not resume audio context:', e);
+                }
+            }
+
+            const audio = new Audio(audioUrl);
+            
+            // Set up event handlers
+            audio.onended = () => {
+                setTimeout(resolve, 500); // Small delay before resuming
+            };
+
+            audio.onerror = (error) => {
+                console.error('Audio playback error:', error, 'URL:', audioUrl);
+                console.error('Audio error details:', {
+                    code: audio.error?.code,
+                    message: audio.error?.message,
+                    networkState: audio.networkState,
+                    readyState: audio.readyState
+                });
+                reject(error);
+            };
+
+            // Try to play when ready
+            const tryPlay = async () => {
+                try {
+                    await audio.play();
+                    console.log('Audio playing successfully:', audioUrl);
+                } catch (playError) {
+                    console.error('Error playing audio:', playError);
+                    // If play fails due to user interaction, try to resume context and retry
+                    if (playError.name === 'NotAllowedError' || playError.name === 'NotSupportedError') {
+                        if (this.audioContext && this.audioContext.state === 'suspended') {
+                            try {
+                                await this.audioContext.resume();
+                                // Try once more after resuming
+                                await audio.play();
+                                console.log('Audio playing after context resume:', audioUrl);
+                            } catch (retryError) {
+                                console.error('Retry failed:', retryError);
+                                reject(playError);
+                            }
+                        } else {
+                            reject(playError);
+                        }
+                    } else {
+                        reject(playError);
+                    }
+                }
+            };
+
+            // If audio can play through, play it
+            audio.oncanplaythrough = () => {
+                tryPlay();
+            };
+
+            // Also try when loaded enough
+            audio.onloadeddata = () => {
+                if (audio.readyState >= 2) {
+                    tryPlay();
+                }
+            };
+
+            // If audio is already loaded enough, play immediately
+            if (audio.readyState >= 2) {
+                tryPlay();
+            } else {
+                // Load the audio
+                audio.load();
+            }
+        });
+    }
+
+    async speakResponse(phrase) {
+        // Fallback text-to-speech when no audio file is available
+        return new Promise((resolve) => {
+            const utterance = new SpeechSynthesisUtterance();
+            utterance.text = `Trigger phrase detected: ${phrase}`;
+            utterance.lang = 'en-US';
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+
+            utterance.onend = () => {
+                setTimeout(resolve, 500);
+            };
+
+            utterance.onerror = (error) => {
+                console.error('Speech synthesis error:', error);
+                resolve();
+            };
+
+            window.speechSynthesis.speak(utterance);
+        });
+    }
+
+    pauseListening() {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (this.recognizer instanceof SpeechRecognition) {
+            if (typeof this.recognizer.stop === 'function') {
+                this.recognizer.stop();
+            }
+        }
+    }
+
+    resumeListening() {
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (this.recognizer instanceof SpeechRecognition) {
+            if (typeof this.recognizer.start === 'function') {
+                setTimeout(() => {
+                    if (this.isListening && !this.isPlaying) {
+                        this.recognizer.start();
+                    }
+                }, 100);
+            }
+        }
+    }
+
+    async startListening() {
+        if (this.isListening || !this.recognizer) return;
+
+        try {
+            this.isListening = true;
+            this.updateStatus('Starting...', 'listening');
+            this.startBtn.disabled = true;
+            this.stopBtn.disabled = false;
+            this.lastSpeechTime = Date.now();
+
+            // Use Web Speech API
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (this.recognizer instanceof SpeechRecognition) {
+                this.recognizer.start();
+            } else {
+                throw new Error('Recognizer not properly initialized');
+            }
+
+            this.updateStatus('Listening...', 'listening');
+        } catch (error) {
+            console.error('Error starting recognition:', error);
+            this.updateStatus('Error starting', 'error');
+            this.isListening = false;
+            this.startBtn.disabled = false;
+            this.stopBtn.disabled = true;
+        }
+    }
+
+
+    stopListening() {
+        this.isListening = false;
+        this.updateStatus('Stopped', 'ready');
+        this.startBtn.disabled = false;
+        this.stopBtn.disabled = true;
+        this.resetPauseTimer();
+
+        if (this.recognizer && typeof this.recognizer.stop === 'function') {
+            this.recognizer.stop();
+        }
+    }
+
+    updateTranscript(final, interim) {
+        if (final) {
+            // Accumulate final transcript
+            this.currentTranscript += final + ' ';
+            this.words = this.currentTranscript.trim().split(' ');
+            console.log('Final transcript added. Current transcript:', this.currentTranscript);
+        }
+
+        let html = '';
+        const transcriptLower = this.currentTranscript.toLowerCase();
+        
+        this.words.forEach((word, index) => {
+            const wordLower = word.toLowerCase().replace(/[.,!?]/g, '');
+            let className = 'word';
+            
+            // Check if this word is part of any trigger phrase
+            const isPartOfTrigger = this.triggerPhrases.some(trigger => {
+                const triggerWords = trigger.phrase.toLowerCase().split(' ');
+                return triggerWords.some(tw => tw === wordLower || wordLower.includes(tw) || tw.includes(wordLower));
+            });
+            
+            if (isPartOfTrigger) {
+                className += ' trigger';
+            }
+            
+            html += `<span class="${className}">${word}</span>`;
+        });
+
+        if (interim) {
+            html += `<span class="word highlight">${interim}</span>`;
+        }
+
+        this.transcriptDiv.innerHTML = html;
+        this.transcriptDiv.scrollTop = this.transcriptDiv.scrollHeight;
+    }
+
+    addTriggerLog(timestamp, transcript, triggerPhrase) {
+        const logEntry = document.createElement('div');
+        logEntry.className = 'trigger-event';
+        logEntry.innerHTML = `
+            <time>${timestamp}</time>
+            <div class="phrase">Trigger detected: "${triggerPhrase}"</div>
+            <div class="transcript">Transcript: "${transcript}"</div>
+        `;
+        this.triggerLog.insertBefore(logEntry, this.triggerLog.firstChild);
+        
+        // Keep only last 10 entries
+        while (this.triggerLog.children.length > 10) {
+            this.triggerLog.removeChild(this.triggerLog.lastChild);
+        }
+    }
+
+    clearTranscript() {
+        this.transcriptDiv.innerHTML = '';
+        this.currentTranscript = '';
+        this.words = [];
+        this.triggerLog.innerHTML = '';
+        this.triggerDetectedInCurrentSession = false;
+        this.detectedTrigger = null;
+        this.resetPauseTimer();
+    }
+
+    updateStatus(text, state) {
+        this.statusText.textContent = text;
+        this.statusDot.className = 'status-dot ' + state;
+    }
+}
+
+// Initialize app when DOM is ready
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new SpeechRecognitionApp();
+});
+
