@@ -696,14 +696,33 @@ class SpeechRecognitionApp {
         let hasFinalResult = false;
         let hasInterimResult = false;
 
+        // On Android, we might get multiple results with progressively longer transcripts
+        // We need to only use the LAST (most complete) interim result to avoid duplication
+        let lastInterimIndex = -1;
+        let lastFinalIndex = -1;
+
+        // First pass: find the last interim and final result indices
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+                lastFinalIndex = i;
+                hasFinalResult = true;
+            } else {
+                lastInterimIndex = i;
+                hasInterimResult = true;
+            }
+        }
+
+        // Second pass: only accumulate final results, and use only the last interim result
         for (let i = event.resultIndex; i < event.results.length; i++) {
             const transcript = event.results[i][0].transcript;
             if (event.results[i].isFinal) {
+                // Only add final results (they don't duplicate)
                 finalTranscript += transcript + ' ';
-                hasFinalResult = true;
-            } else {
-                interimTranscript += transcript;
-                hasInterimResult = true;
+            } else if (i === lastInterimIndex) {
+                // Only use the LAST interim result to avoid showing partial duplicates
+                // On Android, interim results are cumulative (e.g., "let", "let us", "let us try")
+                // We only want to show the most complete one
+                interimTranscript = transcript;
             }
         }
 
@@ -1340,15 +1359,29 @@ class SpeechRecognitionApp {
 
     updateTranscript(final, interim) {
         if (final) {
-            // Accumulate final transcript
-            this.currentTranscript += final + ' ';
-            this.words = this.currentTranscript.trim().split(' ');
+            // Accumulate final transcript (trim to avoid extra spaces)
+            const trimmedFinal = final.trim();
+            if (trimmedFinal) {
+                // Only add if it's not already in the transcript (avoid duplicates)
+                // Check if this final text is already at the end of currentTranscript
+                const currentLower = this.currentTranscript.toLowerCase().trim();
+                const finalLower = trimmedFinal.toLowerCase();
+                
+                // If the final text is already at the end, don't add it again
+                if (!currentLower.endsWith(finalLower)) {
+                    this.currentTranscript += trimmedFinal + ' ';
+                } else {
+                    console.log('Skipping duplicate final transcript:', trimmedFinal);
+                }
+            }
+            this.words = this.currentTranscript.trim().split(/\s+/).filter(w => w.length > 0);
             console.log('Final transcript added. Current transcript:', this.currentTranscript);
         }
 
         let html = '';
         const transcriptLower = this.currentTranscript.toLowerCase();
         
+        // Display final words
         this.words.forEach((word, index) => {
             const wordLower = word.toLowerCase().replace(/[.,!?]/g, '');
             let className = 'word';
@@ -1366,8 +1399,16 @@ class SpeechRecognitionApp {
             html += `<span class="${className}">${word}</span>`;
         });
 
+        // Only show interim if it's not already in the final transcript
+        // This prevents showing duplicate text on Android
         if (interim) {
-            html += `<span class="word highlight">${interim}</span>`;
+            const interimLower = interim.toLowerCase().trim();
+            const currentLower = this.currentTranscript.toLowerCase().trim();
+            
+            // Only show interim if it's new text not already in final transcript
+            if (!currentLower.includes(interimLower) && !interimLower.startsWith(currentLower)) {
+                html += `<span class="word highlight">${interim}</span>`;
+            }
         }
 
         this.transcriptDiv.innerHTML = html;
