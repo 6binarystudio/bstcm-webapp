@@ -421,11 +421,8 @@ class SpeechRecognitionApp {
                     }
                 }
                 
-                // For iOS: Pre-load and unlock audio elements on first user interaction
-                if (!this.audioUnlocked) {
-                    this.unlockAudioForIOS();
-                    this.audioUnlocked = true;
-                }
+                // Note: Audio unlocking is now handled in startListening() to ensure
+                // it happens synchronously during the user interaction
             };
             
             // Unlock on any user interaction
@@ -461,65 +458,73 @@ class SpeechRecognitionApp {
     async unlockAudioForIOS() {
         // Unlock ALL audio elements for iOS by playing/pausing them in response to user gesture
         // iOS requires each audio element to be "unlocked" individually
+        // CRITICAL: This must happen synchronously during user interaction (no setTimeout delays)
         console.log('Unlocking all audio elements for iOS (silent unlock)...');
         
-        const unlockPromises = [];
+        let unlockedCount = 0;
+        let failedCount = 0;
         
-        // Unlock all audio elements sequentially to avoid conflicts
-        this.triggerPhrases.forEach((trigger, index) => {
+        // Unlock all audio elements sequentially WITHOUT delays to maintain user interaction context
+        for (const trigger of this.triggerPhrases) {
             if (trigger.audioUrl) {
                 const audio = this.audioElements.get(trigger.id);
                 if (audio && !audio._unlocked) {
-                    const unlock = async () => {
+                    try {
+                        // Set volume to 0 first
+                        audio.volume = 0;
+                        
+                        // Load if needed (but don't wait - iOS needs immediate response)
+                        if (audio.readyState < 2) {
+                            audio.load();
+                            // Don't wait - just try to play immediately
+                            // If it fails, we'll catch it
+                        }
+                        
+                        // CRITICAL: Play and immediately pause - must happen synchronously
+                        // This unlocks the audio element for future use
+                        // Use .then() instead of await to maintain sync context
                         try {
-                            // Set volume to 0 and ensure it's ready
-                            audio.volume = 0;
-                            if (audio.readyState < 2) {
-                                audio.load();
-                                await new Promise(resolve => {
-                                    if (audio.readyState >= 2) {
-                                        resolve();
-                                    } else {
-                                        audio.addEventListener('canplay', resolve, { once: true });
-                                        setTimeout(resolve, 2000);
-                                    }
-                                });
-                            }
-                            
-                            // Play and immediately pause (silent unlock)
                             const playPromise = audio.play();
                             if (playPromise !== undefined) {
-                                await playPromise;
+                                // Wait for play promise but with very short timeout
+                                await Promise.race([
+                                    playPromise,
+                                    new Promise((_, reject) => setTimeout(() => reject(new Error('Play timeout')), 100))
+                                ]);
                             }
+                            
+                            // Immediately pause (should be silent due to volume = 0)
                             audio.pause();
                             audio.currentTime = 0;
                             audio.volume = 1;
                             
                             // Mark as unlocked
                             audio._unlocked = true;
+                            unlockedCount++;
                             console.log(`✅ Audio unlocked: ${trigger.phrase}`);
-                        } catch (e) {
-                            console.warn(`Could not unlock audio for ${trigger.phrase}:`, e);
-                            // Mark as attempted so we don't keep trying
+                        } catch (playErr) {
+                            // If play fails, mark as attempted
+                            console.warn(`Could not unlock audio for ${trigger.phrase}:`, playErr);
+                            audio._unlockAttempted = true;
+                            failedCount++;
+                        }
+                    } catch (e) {
+                        console.warn(`Error unlocking audio for ${trigger.phrase}:`, e);
+                        if (audio) {
                             audio._unlockAttempted = true;
                         }
-                    };
-                    
-                    // Stagger unlocks to avoid conflicts
-                    unlockPromises.push(
-                        new Promise(resolve => {
-                            setTimeout(() => {
-                                unlock().then(resolve).catch(resolve);
-                            }, index * 150); // 150ms delay between each
-                        })
-                    );
+                        failedCount++;
+                    }
                 }
             }
-        });
+        }
         
-        // Wait for all unlocks to complete
-        await Promise.all(unlockPromises);
-        console.log('✅ All audio elements unlocked');
+        console.log(`✅ Audio unlock complete: ${unlockedCount} unlocked, ${failedCount} failed`);
+        
+        // If some failed, log a warning
+        if (failedCount > 0) {
+            console.warn(`⚠️ ${failedCount} audio files could not be unlocked. They may not play on iOS.`);
+        }
     }
     
     async unlockSingleAudioForIOS(audio, triggerPhrase) {
@@ -1004,7 +1009,25 @@ class SpeechRecognitionApp {
                         audio.volume = 1;
                     }
                     
-                    console.log('Attempting to play audio, readyState:', audio.readyState);
+                    console.log('Attempting to play audio, readyState:', audio.readyState, 'unlocked:', audio._unlocked);
+                    
+                    // For iOS: If audio is not unlocked, try to unlock it now
+                    // (This shouldn't happen if unlockAudioForIOS worked, but just in case)
+                    if (!audio._unlocked && !audio._unlockAttempted) {
+                        console.warn('⚠️ Audio not unlocked, attempting emergency unlock...');
+                        try {
+                            audio.volume = 0;
+                            await audio.play();
+                            audio.pause();
+                            audio.currentTime = 0;
+                            audio.volume = 1;
+                            audio._unlocked = true;
+                            console.log('✅ Emergency unlock successful');
+                        } catch (unlockErr) {
+                            console.error('❌ Emergency unlock failed:', unlockErr);
+                        }
+                    }
+                    
                     const playPromise = audio.play();
                     if (playPromise !== undefined) {
                         await playPromise;
@@ -1149,22 +1172,30 @@ class SpeechRecognitionApp {
         if (this.isListening || !this.recognizer) return;
 
         try {
-            // Unlock audio on user interaction (iOS requirement)
+            // CRITICAL: Unlock audio on user interaction (iOS requirement)
+            // This MUST happen synchronously during the click event
             // Only unlock once, and do it silently
             if (!this.audioUnlocked) {
                 console.log('Unlocking audio elements (silent unlock for iOS)...');
                 try {
+                    // Unlock immediately - no delays to maintain user interaction context
                     await this.unlockAudioForIOS();
                     this.audioUnlocked = true;
                     console.log('✅ All audio elements unlocked');
                 } catch (e) {
                     console.warn('Error unlocking audio:', e);
+                    // Continue anyway - some audio might still work
                 }
             }
             
             // Resume audio context if suspended
             if (this.audioContext && this.audioContext.state === 'suspended') {
-                await this.audioContext.resume();
+                try {
+                    await this.audioContext.resume();
+                    console.log('✅ Audio context resumed');
+                } catch (e) {
+                    console.warn('Could not resume audio context:', e);
+                }
             }
 
             this.isListening = true;
