@@ -818,22 +818,26 @@ class SpeechRecognitionApp {
             }
         }
 
+        // Only update transcript when we have final results (complete sentences after pause)
+        // Don't update for interim results - wait for them to become final
         if (finalTranscript) {
             this.processFinalTranscript(finalTranscript.trim());
+            this.updateTranscript(finalTranscript.trim(), ''); // Don't pass interim - only show final
+            this.lastSpeechTime = Date.now();
+        } else if (hasInterimResult) {
+            // Only interim results - don't update transcript, just reset pause timer
+            // Transcript will update when interim becomes final after pause
+            this.resetPauseTimer();
+            return; // Don't process further - wait for final results
         }
-
-        this.updateTranscript(finalTranscript.trim(), interimTranscript);
-        this.lastSpeechTime = Date.now();
         
-        // If we have interim results, we're still speaking - reset pause timer
-        if (hasInterimResult) {
+        // If we have interim results along with final, we're still speaking - reset pause timer
+        if (hasInterimResult && hasFinalResult) {
             this.resetPauseTimer();
         }
         
-        // If we have final results, clear any interim display and check for trigger phrases
+        // If we have final results, check for trigger phrases
         if (hasFinalResult) {
-            // Clear interim when we get final results (prevents Android from showing old interim after pause)
-            interimTranscript = '';
             // Prioritize checking the NEW final transcript first (most recent speech)
             // This prevents matching old triggers from earlier in the conversation
             const newFinalLower = finalTranscript.toLowerCase().trim();
@@ -1452,7 +1456,8 @@ class SpeechRecognitionApp {
     }
 
     updateTranscript(final, interim) {
-        // Add new final text to the accumulated transcript
+        // Only update transcript when we have final results (after pause)
+        // Don't show interim results - wait for complete sentences
         if (final && final.trim()) {
             this.currentTranscript += final.trim() + ' ';
             this.words = this.currentTranscript.trim().split(/\s+/).filter(w => w.length > 0);
@@ -1460,7 +1465,8 @@ class SpeechRecognitionApp {
             console.log('Current full transcript:', this.currentTranscript.trim());
         }
 
-        // Build HTML display - show final words + interim (if any)
+        // Build HTML display - only show final words (complete sentences)
+        // No interim results shown - they will appear when finalized after pause
         let html = '';
         
         // Display all final words
@@ -1481,50 +1487,7 @@ class SpeechRecognitionApp {
             html += `<span class="${className}">${word}</span>`;
         });
 
-        // Show interim text only if it's truly new (not already in final)
-        if (interim && interim.trim()) {
-            const interimTrimmed = interim.trim();
-            const currentLower = this.currentTranscript.toLowerCase().trim();
-            const interimLower = interimTrimmed.toLowerCase();
-            
-            // Check if interim is already in final transcript
-            // For Android (cumulative), interim might contain words already in final
-            if (this.isCumulativePlatform && currentLower) {
-                // Word-by-word check: only show words that aren't already in final
-                const currentWords = currentLower.split(/\s+/).filter(w => w.length > 0);
-                const interimWords = interimLower.split(/\s+/).filter(w => w.length > 0);
-                const originalInterimWords = interimTrimmed.split(/\s+/).filter(w => w.length > 0);
-                
-                // Find words that are new (not in final)
-                const newWords = [];
-                for (let i = 0; i < interimWords.length; i++) {
-                    // Check if this word is already in final (checking from the end to avoid matching old words)
-                    const word = interimWords[i];
-                    let isInFinal = false;
-                    
-                    // Check if word appears in final transcript after the last matched position
-                    for (let j = currentWords.length - 1; j >= 0; j--) {
-                        if (currentWords[j] === word) {
-                            isInFinal = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!isInFinal) {
-                        newWords.push(originalInterimWords[i]);
-                    }
-                }
-                
-                if (newWords.length > 0) {
-                    html += `<span class="word highlight">${newWords.join(' ')}</span>`;
-                }
-            } else {
-                // iPhone/Laptop: simple check - only show if not already in final
-                if (!currentLower.includes(interimLower)) {
-                    html += `<span class="word highlight">${interimTrimmed}</span>`;
-                }
-            }
-        }
+        // Don't show interim results - wait for them to become final after pause
 
         this.transcriptDiv.innerHTML = html;
         this.transcriptDiv.scrollTop = this.transcriptDiv.scrollHeight;
