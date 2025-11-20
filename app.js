@@ -7,6 +7,8 @@ class SpeechRecognitionApp {
         this.isPlaying = false;
         this.audioContext = null;
         this.triggerPhrases = []; // Array of {phrase: string, audioFile: File/string, audioUrl: string}
+        this.audioElements = new Map(); // Cache audio elements for iOS compatibility
+        this.audioUnlocked = false; // Track if audio is unlocked for iOS
         this.pauseDuration = 1500;
         this.lastSpeechTime = 0;
         this.pauseTimer = null;
@@ -105,6 +107,8 @@ class SpeechRecognitionApp {
                         }
                     }
                     console.log(`✅ Loaded ${this.triggerPhrases.length} triggers total`);
+                    // Pre-load audio elements for iOS compatibility
+                    this.preloadAudioElements();
                     return; // Successfully loaded packaged triggers
                 }
             }
@@ -126,6 +130,9 @@ class SpeechRecognitionApp {
         for (const trigger of defaultTriggers) {
             await this.addTriggerWithFallback(trigger.phrase, trigger.frequency, trigger.duration);
         }
+        
+        // Pre-load audio elements for iOS compatibility
+        this.preloadAudioElements();
     }
 
     async addTriggerWithFallback(phrase, frequency = 440, duration = 0.5) {
@@ -311,20 +318,101 @@ class SpeechRecognitionApp {
         try {
             this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
             
-            // Resume audio context on user interaction (required by browsers)
-            const resumeAudio = async () => {
+            // Resume audio context on user interaction (required by browsers, especially iOS)
+            const unlockAudio = async () => {
                 if (this.audioContext && this.audioContext.state === 'suspended') {
-                    await this.audioContext.resume();
+                    try {
+                        await this.audioContext.resume();
+                        console.log('Audio context resumed');
+                    } catch (e) {
+                        console.warn('Could not resume audio context:', e);
+                    }
                 }
-                document.removeEventListener('click', resumeAudio);
-                document.removeEventListener('touchstart', resumeAudio);
+                
+                // For iOS: Pre-load and unlock audio elements on first user interaction
+                if (!this.audioUnlocked) {
+                    this.unlockAudioForIOS();
+                    this.audioUnlocked = true;
+                }
             };
             
-            document.addEventListener('click', resumeAudio, { once: true });
-            document.addEventListener('touchstart', resumeAudio, { once: true });
+            // Unlock on any user interaction
+            document.addEventListener('click', unlockAudio, { once: true });
+            document.addEventListener('touchstart', unlockAudio, { once: true });
+            document.addEventListener('touchend', unlockAudio, { once: true });
         } catch (error) {
             console.error('Error initializing audio context:', error);
         }
+    }
+
+    preloadAudioElements() {
+        // Pre-load audio elements for all triggers (for iOS compatibility)
+        console.log('Pre-loading audio elements...');
+        
+        this.triggerPhrases.forEach(trigger => {
+            if (trigger.audioUrl && !this.audioElements.has(trigger.id)) {
+                try {
+                    const audio = new Audio(trigger.audioUrl);
+                    audio.preload = 'auto';
+                    audio.volume = 1;
+                    
+                    // Store for later use
+                    this.audioElements.set(trigger.id, audio);
+                    console.log(`Audio element pre-loaded for: ${trigger.phrase}`);
+                } catch (error) {
+                    console.warn(`Error pre-loading audio for ${trigger.phrase}:`, error);
+                }
+            }
+        });
+    }
+
+    unlockAudioForIOS() {
+        // Unlock audio elements for iOS by playing/pausing in response to user gesture
+        // iOS requires audio to be "unlocked" by playing/pausing in response to user gesture
+        console.log('Unlocking audio for iOS compatibility...');
+        
+        this.triggerPhrases.forEach(trigger => {
+            if (trigger.audioUrl) {
+                const audio = this.audioElements.get(trigger.id);
+                if (audio) {
+                    // Unlock by playing and immediately pausing (iOS requirement)
+                    const unlock = async () => {
+                        try {
+                            audio.volume = 0; // Silent unlock
+                            await audio.play();
+                            audio.pause();
+                            audio.currentTime = 0;
+                            audio.volume = 1; // Restore volume
+                            console.log(`✅ Audio unlocked for: ${trigger.phrase}`);
+                        } catch (e) {
+                            console.warn(`Could not unlock audio for ${trigger.phrase}:`, e);
+                        }
+                    };
+                    
+                    // Try to unlock immediately
+                    unlock();
+                } else {
+                    // Create and unlock if not pre-loaded
+                    try {
+                        const newAudio = new Audio(trigger.audioUrl);
+                        newAudio.volume = 0;
+                        newAudio.preload = 'auto';
+                        this.audioElements.set(trigger.id, newAudio);
+                        
+                        newAudio.play().then(() => {
+                            newAudio.pause();
+                            newAudio.currentTime = 0;
+                            newAudio.volume = 1;
+                            console.log(`✅ Audio unlocked for: ${trigger.phrase}`);
+                        }).catch(e => {
+                            console.warn(`Could not unlock audio for ${trigger.phrase}:`, e);
+                        });
+                    } catch (error) {
+                        console.warn(`Error creating audio element for ${trigger.phrase}:`, error);
+                    }
+                }
+            }
+        });
     }
 
     async loadModel() {
@@ -611,7 +699,8 @@ class SpeechRecognitionApp {
         }
 
         try {
-            await this.playAudioFile(trigger.audioUrl);
+            // Pass trigger ID to use cached audio element (iOS compatibility)
+            await this.playAudioFile(trigger.audioUrl, trigger.id);
         } catch (error) {
             console.error('Error playing audio:', error);
             // Fallback to text-to-speech on error
@@ -635,7 +724,7 @@ class SpeechRecognitionApp {
         }
     }
 
-    async playAudioFile(audioUrl) {
+    async playAudioFile(audioUrl, triggerId = null) {
         return new Promise(async (resolve, reject) => {
             // Ensure audio context is resumed
             if (this.audioContext && this.audioContext.state === 'suspended') {
@@ -646,14 +735,24 @@ class SpeechRecognitionApp {
                 }
             }
 
-            const audio = new Audio(audioUrl);
+            // For iOS: Use cached audio element if available (already unlocked)
+            let audio = null;
+            if (triggerId && this.audioElements.has(triggerId)) {
+                audio = this.audioElements.get(triggerId);
+                // Reset audio to beginning
+                audio.currentTime = 0;
+                console.log('Using cached audio element for iOS');
+            } else {
+                // Create new audio element
+                audio = new Audio(audioUrl);
+            }
             
             // Set up event handlers
-            audio.onended = () => {
+            const onEnded = () => {
                 setTimeout(resolve, 500); // Small delay before resuming
             };
-
-            audio.onerror = (error) => {
+            
+            const onError = (error) => {
                 console.error('Audio playback error:', error, 'URL:', audioUrl);
                 console.error('Audio error details:', {
                     code: audio.error?.code,
@@ -664,14 +763,30 @@ class SpeechRecognitionApp {
                 reject(error);
             };
 
+            // For cached audio elements, clone the handlers to avoid conflicts
+            // Add new listeners (old ones with {once: true} auto-remove)
+            audio.addEventListener('ended', onEnded, { once: true });
+            audio.addEventListener('error', onError, { once: true });
+
             // Try to play when ready
             const tryPlay = async () => {
                 try {
+                    // For iOS: Ensure audio is ready
+                    if (audio.readyState < 2) {
+                        await new Promise((res) => {
+                            if (audio.readyState >= 2) {
+                                res();
+                            } else {
+                                audio.addEventListener('canplay', () => res(), { once: true });
+                            }
+                        });
+                    }
+                    
                     await audio.play();
                     console.log('Audio playing successfully:', audioUrl);
                 } catch (playError) {
                     console.error('Error playing audio:', playError);
-                    // If play fails due to user interaction, try to resume context and retry
+                    // If play fails, try to resume context and retry
                     if (playError.name === 'NotAllowedError' || playError.name === 'NotSupportedError') {
                         if (this.audioContext && this.audioContext.state === 'suspended') {
                             try {
@@ -693,21 +808,15 @@ class SpeechRecognitionApp {
             };
 
             // If audio can play through, play it
-            audio.oncanplaythrough = () => {
-                tryPlay();
-            };
-
-            // Also try when loaded enough
-            audio.onloadeddata = () => {
-                if (audio.readyState >= 2) {
-                    tryPlay();
-                }
-            };
-
-            // If audio is already loaded enough, play immediately
             if (audio.readyState >= 2) {
                 tryPlay();
             } else {
+                audio.addEventListener('canplaythrough', () => tryPlay(), { once: true });
+                audio.addEventListener('loadeddata', () => {
+                    if (audio.readyState >= 2) {
+                        tryPlay();
+                    }
+                }, { once: true });
                 // Load the audio
                 audio.load();
             }
@@ -763,6 +872,17 @@ class SpeechRecognitionApp {
         if (this.isListening || !this.recognizer) return;
 
         try {
+            // Unlock audio on user interaction (iOS requirement)
+            if (!this.audioUnlocked) {
+                await this.unlockAudioForIOS();
+                this.audioUnlocked = true;
+            }
+            
+            // Resume audio context if suspended
+            if (this.audioContext && this.audioContext.state === 'suspended') {
+                await this.audioContext.resume();
+            }
+
             this.isListening = true;
             this.updateStatus('Starting...', 'listening');
             this.startBtn.disabled = true;
