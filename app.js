@@ -981,6 +981,13 @@ class SpeechRecognitionApp {
             }
             
             if (matchedTrigger) {
+                // Clear transcript history immediately when trigger is detected
+                // This prevents the same trigger from being detected again from accumulated transcript
+                console.log('🧹 Clearing transcript history after trigger detection:', matchedTrigger.phrase);
+                this.currentTranscript = '';
+                this.words = [];
+                this.pendingFinalTranscript = ''; // Clear buffered transcript too
+                this.transcriptDiv.innerHTML = '';
                 
                 // If no interim results, we might be pausing - start timer
                 if (!hasInterimResult) {
