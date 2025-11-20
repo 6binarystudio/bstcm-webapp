@@ -16,6 +16,7 @@ class SpeechRecognitionApp {
         this.words = [];
         this.triggerDetectedInCurrentSession = false;
         this.detectedTrigger = null; // Store which trigger was detected
+        this.lastProcessedResultIndex = -1; // Track the last result index we processed to avoid duplicates
         
         this.initializeElements();
         this.setupEventListeners();
@@ -691,46 +692,125 @@ class SpeechRecognitionApp {
     }
 
     handleRecognitionResult(event) {
-        let interimTranscript = '';
-        let finalTranscript = '';
+        // On Android, results are cumulative - each result contains the full transcript so far
+        // We need to extract only NEW text that hasn't been processed yet
+        
+        // Skip if we've already processed these results (Android sometimes sends duplicates)
+        if (event.resultIndex <= this.lastProcessedResultIndex && event.results.length > 0) {
+            console.log('Skipping already processed results, resultIndex:', event.resultIndex, 'lastProcessed:', this.lastProcessedResultIndex);
+            return;
+        }
+        
+        let newFinalText = '';
+        let latestInterimText = '';
         let hasFinalResult = false;
         let hasInterimResult = false;
 
-        // On Android, we might get multiple results with progressively longer transcripts
-        // We need to only use the LAST (most complete) interim result to avoid duplication
+        // Find the last interim and all final results
         let lastInterimIndex = -1;
-        let lastFinalIndex = -1;
+        const finalResults = [];
 
-        // First pass: find the last interim and final result indices
         for (let i = event.resultIndex; i < event.results.length; i++) {
             if (event.results[i].isFinal) {
-                lastFinalIndex = i;
+                finalResults.push(i);
                 hasFinalResult = true;
             } else {
                 lastInterimIndex = i;
                 hasInterimResult = true;
             }
         }
+        
+        // Update last processed index
+        if (event.results.length > 0) {
+            this.lastProcessedResultIndex = event.results.length - 1;
+        }
 
-        // Second pass: only accumulate final results, and use only the last interim result
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-            const transcript = event.results[i][0].transcript;
-            if (event.results[i].isFinal) {
-                // Only add final results (they don't duplicate)
-                finalTranscript += transcript + ' ';
-            } else if (i === lastInterimIndex) {
-                // Only use the LAST interim result to avoid showing partial duplicates
-                // On Android, interim results are cumulative (e.g., "let", "let us", "let us try")
-                // We only want to show the most complete one
-                interimTranscript = transcript;
+        // Process final results - extract only new text
+        // On Android, each result contains the FULL cumulative transcript, so we need to extract only new parts
+        for (const index of finalResults) {
+            const fullTranscript = event.results[index][0].transcript.trim();
+            if (fullTranscript) {
+                const currentLower = this.currentTranscript.toLowerCase().trim();
+                const fullLower = fullTranscript.toLowerCase();
+                
+                // Extract only the NEW part that's not already in currentTranscript
+                if (currentLower && fullLower.startsWith(currentLower)) {
+                    // The full transcript starts with what we already have - extract the new part
+                    const newPart = fullTranscript.substring(this.currentTranscript.length).trim();
+                    if (newPart) {
+                        newFinalText += newPart + ' ';
+                        console.log('Extracted new final text:', newPart, 'from full:', fullTranscript);
+                    }
+                } else if (!currentLower || !fullLower.includes(currentLower)) {
+                    // Completely new text (or doesn't contain what we have)
+                    // This shouldn't happen often, but handle it
+                    if (!currentLower) {
+                        newFinalText += fullTranscript + ' ';
+                    } else {
+                        // Try to find overlap and extract new part
+                        const words = fullTranscript.split(/\s+/);
+                        const currentWords = this.currentTranscript.trim().split(/\s+/);
+                        let startIndex = 0;
+                        
+                        // Find where the new text starts
+                        for (let i = 0; i < words.length; i++) {
+                            if (i < currentWords.length && words[i].toLowerCase() === currentWords[i].toLowerCase()) {
+                                startIndex = i + 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        
+                        if (startIndex < words.length) {
+                            const newPart = words.slice(startIndex).join(' ');
+                            newFinalText += newPart + ' ';
+                            console.log('Extracted new final text (word-based):', newPart);
+                        }
+                    }
+                }
             }
         }
 
-        if (finalTranscript) {
-            this.processFinalTranscript(finalTranscript.trim());
+        // Get the latest interim result (most complete one)
+        // Extract only the part that extends beyond the final transcript
+        if (lastInterimIndex >= 0) {
+            const fullInterim = event.results[lastInterimIndex][0].transcript.trim();
+            const currentLower = this.currentTranscript.toLowerCase().trim();
+            const fullInterimLower = fullInterim.toLowerCase();
+            
+            if (currentLower && fullInterimLower.startsWith(currentLower)) {
+                // Extract only the new part beyond what's already final
+                latestInterimText = fullInterim.substring(this.currentTranscript.length).trim();
+            } else if (!currentLower || !fullInterimLower.includes(currentLower)) {
+                // New interim text
+                latestInterimText = fullInterim;
+            } else {
+                // Interim overlaps with final in a complex way - try word-based extraction
+                const interimWords = fullInterim.split(/\s+/);
+                const currentWords = this.currentTranscript.trim().split(/\s+/);
+                let startIndex = 0;
+                
+                for (let i = 0; i < interimWords.length; i++) {
+                    if (i < currentWords.length && interimWords[i].toLowerCase() === currentWords[i].toLowerCase()) {
+                        startIndex = i + 1;
+                    } else {
+                        break;
+                    }
+                }
+                
+                if (startIndex < interimWords.length) {
+                    latestInterimText = interimWords.slice(startIndex).join(' ');
+                } else {
+                    latestInterimText = '';
+                }
+            }
         }
 
-        this.updateTranscript(finalTranscript, interimTranscript);
+        if (newFinalText) {
+            this.processFinalTranscript(newFinalText.trim());
+        }
+
+        this.updateTranscript(newFinalText.trim(), latestInterimText);
         this.lastSpeechTime = Date.now();
         
         // If we have interim results, we're still speaking - reset pause timer
@@ -1358,30 +1438,18 @@ class SpeechRecognitionApp {
     }
 
     updateTranscript(final, interim) {
-        if (final) {
-            // Accumulate final transcript (trim to avoid extra spaces)
-            const trimmedFinal = final.trim();
-            if (trimmedFinal) {
-                // Only add if it's not already in the transcript (avoid duplicates)
-                // Check if this final text is already at the end of currentTranscript
-                const currentLower = this.currentTranscript.toLowerCase().trim();
-                const finalLower = trimmedFinal.toLowerCase();
-                
-                // If the final text is already at the end, don't add it again
-                if (!currentLower.endsWith(finalLower)) {
-                    this.currentTranscript += trimmedFinal + ' ';
-                } else {
-                    console.log('Skipping duplicate final transcript:', trimmedFinal);
-                }
-            }
+        // Add new final text to the accumulated transcript
+        if (final && final.trim()) {
+            this.currentTranscript += final.trim() + ' ';
             this.words = this.currentTranscript.trim().split(/\s+/).filter(w => w.length > 0);
-            console.log('Final transcript added. Current transcript:', this.currentTranscript);
+            console.log('Final transcript added:', final.trim());
+            console.log('Current full transcript:', this.currentTranscript.trim());
         }
 
+        // Build HTML display - show final words + interim (if any)
         let html = '';
-        const transcriptLower = this.currentTranscript.toLowerCase();
         
-        // Display final words
+        // Display all final words
         this.words.forEach((word, index) => {
             const wordLower = word.toLowerCase().replace(/[.,!?]/g, '');
             let className = 'word';
@@ -1399,15 +1467,16 @@ class SpeechRecognitionApp {
             html += `<span class="${className}">${word}</span>`;
         });
 
-        // Only show interim if it's not already in the final transcript
-        // This prevents showing duplicate text on Android
-        if (interim) {
-            const interimLower = interim.toLowerCase().trim();
+        // Show interim text only if it's truly new (not already in final)
+        if (interim && interim.trim()) {
+            const interimTrimmed = interim.trim();
             const currentLower = this.currentTranscript.toLowerCase().trim();
+            const interimLower = interimTrimmed.toLowerCase();
             
-            // Only show interim if it's new text not already in final transcript
-            if (!currentLower.includes(interimLower) && !interimLower.startsWith(currentLower)) {
-                html += `<span class="word highlight">${interim}</span>`;
+            // Only show if interim is not already part of the final transcript
+            // On Android, interim might be cumulative, so we check if it's already shown
+            if (!currentLower.includes(interimLower)) {
+                html += `<span class="word highlight">${interimTrimmed}</span>`;
             }
         }
 
@@ -1438,6 +1507,7 @@ class SpeechRecognitionApp {
         this.triggerLog.innerHTML = '';
         this.triggerDetectedInCurrentSession = false;
         this.detectedTrigger = null;
+        this.lastProcessedResultIndex = -1; // Reset result tracking
         this.resetPauseTimer();
     }
 
