@@ -366,53 +366,76 @@ class SpeechRecognitionApp {
         });
     }
 
-    unlockAudioForIOS() {
-        // Unlock audio elements for iOS by playing/pausing in response to user gesture
+    async unlockAudioForIOS() {
+        // Unlock audio context for iOS by playing/pausing ONE audio file
         // iOS requires audio to be "unlocked" by playing/pausing in response to user gesture
-        console.log('Unlocking audio for iOS compatibility...');
+        // We use a "lazy unlock" approach - only unlock the context, not all files
+        console.log('Unlocking audio context for iOS (silent unlock)...');
         
-        this.triggerPhrases.forEach(trigger => {
-            if (trigger.audioUrl) {
-                const audio = this.audioElements.get(trigger.id);
-                if (audio) {
-                    // Unlock by playing and immediately pausing (iOS requirement)
-                    const unlock = async () => {
-                        try {
-                            audio.volume = 0; // Silent unlock
-                            await audio.play();
-                            audio.pause();
-                            audio.currentTime = 0;
-                            audio.volume = 1; // Restore volume
-                            console.log(`✅ Audio unlocked for: ${trigger.phrase}`);
-                        } catch (e) {
-                            console.warn(`Could not unlock audio for ${trigger.phrase}:`, e);
-                        }
-                    };
-                    
-                    // Try to unlock immediately
-                    unlock();
-                } else {
-                    // Create and unlock if not pre-loaded
-                    try {
-                        const newAudio = new Audio(trigger.audioUrl);
-                        newAudio.volume = 0;
-                        newAudio.preload = 'auto';
-                        this.audioElements.set(trigger.id, newAudio);
-                        
-                        newAudio.play().then(() => {
-                            newAudio.pause();
-                            newAudio.currentTime = 0;
-                            newAudio.volume = 1;
-                            console.log(`✅ Audio unlocked for: ${trigger.phrase}`);
-                        }).catch(e => {
-                            console.warn(`Could not unlock audio for ${trigger.phrase}:`, e);
+        // Just unlock the audio context by playing/pausing one file
+        // This unlocks the entire audio system without playing all files
+        if (this.triggerPhrases.length > 0 && this.triggerPhrases[0].audioUrl) {
+            const firstAudio = this.audioElements.get(this.triggerPhrases[0].id);
+            if (firstAudio) {
+                try {
+                    // Set volume to 0 and ensure it's ready
+                    firstAudio.volume = 0;
+                    if (firstAudio.readyState < 2) {
+                        firstAudio.load();
+                        await new Promise(resolve => {
+                            if (firstAudio.readyState >= 2) {
+                                resolve();
+                            } else {
+                                firstAudio.addEventListener('canplay', resolve, { once: true });
+                                setTimeout(resolve, 1000);
+                            }
                         });
-                    } catch (error) {
-                        console.warn(`Error creating audio element for ${trigger.phrase}:`, error);
                     }
+                    
+                    // Play and immediately pause (silent unlock)
+                    await firstAudio.play();
+                    firstAudio.pause();
+                    firstAudio.currentTime = 0;
+                    firstAudio.volume = 1;
+                    
+                    // Mark as unlocked
+                    firstAudio._unlocked = true;
+                    console.log('✅ Audio context unlocked (silent)');
+                } catch (e) {
+                    console.warn('Could not unlock audio context:', e);
                 }
             }
-        });
+        }
+    }
+    
+    async unlockSingleAudioForIOS(audio, triggerPhrase) {
+        // Unlock a single audio element when it's actually needed (lazy unlock)
+        if (audio._unlocked) {
+            return; // Already unlocked
+        }
+        
+        try {
+            audio.volume = 0;
+            if (audio.readyState < 2) {
+                audio.load();
+                await new Promise(resolve => {
+                    if (audio.readyState >= 2) {
+                        resolve();
+                    } else {
+                        audio.addEventListener('canplay', resolve, { once: true });
+                        setTimeout(resolve, 1000);
+                    }
+                });
+            }
+            await audio.play();
+            audio.pause();
+            audio.currentTime = 0;
+            audio.volume = 1;
+            audio._unlocked = true;
+            console.log(`✅ Audio unlocked for: ${triggerPhrase}`);
+        } catch (e) {
+            console.warn(`Could not unlock audio for ${triggerPhrase}:`, e);
+        }
     }
 
     async loadModel() {
@@ -735,10 +758,14 @@ class SpeechRecognitionApp {
                 }
             }
 
-            // For iOS: Use cached audio element if available (already unlocked)
+            // For iOS: Use cached audio element if available
             let audio = null;
             if (triggerId && this.audioElements.has(triggerId)) {
                 audio = this.audioElements.get(triggerId);
+                // Unlock if needed (lazy unlock)
+                if (!audio._unlocked) {
+                    await this.unlockSingleAudioForIOS(audio, triggerId);
+                }
                 // Reset audio to beginning
                 audio.currentTime = 0;
                 console.log('Using cached audio element for iOS');
@@ -873,9 +900,16 @@ class SpeechRecognitionApp {
 
         try {
             // Unlock audio on user interaction (iOS requirement)
+            // Only unlock once, and do it silently
             if (!this.audioUnlocked) {
-                await this.unlockAudioForIOS();
-                this.audioUnlocked = true;
+                console.log('Unlocking audio elements (silent unlock for iOS)...');
+                try {
+                    await this.unlockAudioForIOS();
+                    this.audioUnlocked = true;
+                    console.log('✅ All audio elements unlocked');
+                } catch (e) {
+                    console.warn('Error unlocking audio:', e);
+                }
             }
             
             // Resume audio context if suspended
