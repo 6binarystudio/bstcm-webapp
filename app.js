@@ -18,6 +18,8 @@ class SpeechRecognitionApp {
         this.detectedTrigger = null; // Store which trigger was detected
         this.lastProcessedResultIndex = -1; // Track the last result index we processed to avoid duplicates
         this.isCumulativePlatform = null; // Track if platform uses cumulative results (Android) or incremental (iPhone/Laptop)
+        this.pendingFinalTranscript = ''; // Buffer final results until pause
+        this.pauseCheckTimer = null; // Timer to check for pause
         
         this.initializeElements();
         this.setupEventListeners();
@@ -818,30 +820,54 @@ class SpeechRecognitionApp {
             }
         }
 
-        // Only update transcript when we have final results (complete sentences after pause)
-        // Don't update for interim results - wait for them to become final
+        // Buffer final results and only display after pause (no interim results for a period)
         if (finalTranscript) {
-            this.processFinalTranscript(finalTranscript.trim());
-            this.updateTranscript(finalTranscript.trim(), ''); // Don't pass interim - only show final
+            // Add to pending buffer
+            this.pendingFinalTranscript += finalTranscript + ' ';
             this.lastSpeechTime = Date.now();
-        } else if (hasInterimResult) {
-            // Only interim results - don't update transcript, just reset pause timer
-            // Transcript will update when interim becomes final after pause
-            this.resetPauseTimer();
-            return; // Don't process further - wait for final results
         }
         
-        // If we have interim results along with final, we're still speaking - reset pause timer
-        if (hasInterimResult && hasFinalResult) {
+        // If we have interim results, we're still speaking - clear pause timer and don't display yet
+        if (hasInterimResult) {
             this.resetPauseTimer();
+            // Clear any pending pause check
+            if (this.pauseCheckTimer) {
+                clearTimeout(this.pauseCheckTimer);
+                this.pauseCheckTimer = null;
+            }
+            // Don't update transcript while still speaking, but continue to check for triggers
+        }
+        
+        // No interim results - we have a pause
+        // Wait a bit to ensure no more results are coming, then display buffered final results
+        if (this.pendingFinalTranscript && !hasInterimResult) {
+            // Clear any existing pause check timer
+            if (this.pauseCheckTimer) {
+                clearTimeout(this.pauseCheckTimer);
+            }
+            
+            // Set timer to display after short delay (ensures pause is real)
+            this.pauseCheckTimer = setTimeout(() => {
+                if (this.pendingFinalTranscript.trim()) {
+                    const finalToDisplay = this.pendingFinalTranscript.trim();
+                    this.processFinalTranscript(finalToDisplay);
+                    this.updateTranscript(finalToDisplay, ''); // Display buffered final results
+                    this.pendingFinalTranscript = ''; // Clear buffer
+                    console.log('Displayed buffered final transcript after pause:', finalToDisplay);
+                }
+                this.pauseCheckTimer = null;
+            }, 300); // 300ms delay to ensure pause is real
         }
         
         // If we have final results, check for trigger phrases
+        // Use the buffered final transcript for trigger detection (includes all words spoken so far)
         if (hasFinalResult) {
+            // Use combined pending + new final transcript for trigger detection
+            const combinedFinal = (this.pendingFinalTranscript + finalTranscript).trim();
             // Prioritize checking the NEW final transcript first (most recent speech)
             // This prevents matching old triggers from earlier in the conversation
-            const newFinalLower = finalTranscript.toLowerCase().trim();
-            const fullTranscript = (this.currentTranscript + finalTranscript).toLowerCase().trim();
+            const newFinalLower = combinedFinal.toLowerCase().trim();
+            const fullTranscript = (this.currentTranscript + combinedFinal).toLowerCase().trim();
             
             console.log('🔍 Checking transcript for triggers:');
             console.log('  - New final transcript (PRIORITY):', `"${newFinalLower}"`);
@@ -1004,6 +1030,11 @@ class SpeechRecognitionApp {
         if (this.pauseTimer) {
             clearTimeout(this.pauseTimer);
             this.pauseTimer = null;
+        }
+        // Also clear pause check timer when resetting
+        if (this.pauseCheckTimer) {
+            clearTimeout(this.pauseCheckTimer);
+            this.pauseCheckTimer = null;
         }
     }
 
@@ -1517,6 +1548,7 @@ class SpeechRecognitionApp {
         this.triggerDetectedInCurrentSession = false;
         this.detectedTrigger = null;
         this.lastProcessedResultIndex = -1; // Reset result tracking
+        this.pendingFinalTranscript = ''; // Clear pending buffer
         this.resetPauseTimer();
     }
 
