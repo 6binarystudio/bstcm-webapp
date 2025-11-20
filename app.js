@@ -145,14 +145,26 @@ class SpeechRecognitionApp {
         if (saved) {
             try {
                 const parsed = JSON.parse(saved);
+                console.log(`Loading ${parsed.length} triggers from localStorage`);
                 // Restore triggers with proper structure (File objects can't be saved)
                 this.triggerPhrases = parsed.map((t, index) => ({
                     id: t.id || Date.now() + index + Math.random(), // Use saved ID or generate new one
                     phrase: t.phrase,
-                    audioFile: null, // File objects can't be restored from localStorage
-                    audioUrl: t.audioUrl || null,
+                    audioFile: t.audioFile || null, // Restore audioFile path if available
+                    audioUrl: t.audioUrl || t.audioFile || null, // Use audioUrl or fallback to audioFile
                     isDefault: t.isDefault || false
                 }));
+                
+                // Restore audioUrl from audioFile if audioUrl is missing
+                this.triggerPhrases.forEach(trigger => {
+                    if (!trigger.audioUrl && trigger.audioFile) {
+                        trigger.audioUrl = trigger.audioFile;
+                        console.log(`Restored audioUrl from audioFile for: ${trigger.phrase}`);
+                    }
+                });
+                
+                // Pre-load audio elements after restoring URLs
+                this.preloadAudioElements();
                 
                 // If we have default triggers without audio URLs (blob URLs don't persist),
                 // regenerate the audio for them
@@ -397,11 +409,14 @@ class SpeechRecognitionApp {
         if (audioFile) {
             if (audioFile instanceof File) {
                 trigger.audioUrl = URL.createObjectURL(audioFile);
-            } else {
+            } else if (typeof audioFile === 'string') {
+                // If it's a string, use it directly as the URL
                 trigger.audioUrl = audioFile;
             }
         }
 
+        console.log(`Adding trigger: "${trigger.phrase}", audioFile="${audioFile}", audioUrl="${trigger.audioUrl}", id=${trigger.id}`);
+        
         this.triggerPhrases.push(trigger);
         this.saveTriggers();
     }
@@ -437,28 +452,45 @@ class SpeechRecognitionApp {
     preloadAudioElements() {
         // Pre-load audio elements for all triggers (for iOS compatibility)
         console.log('Pre-loading audio elements...');
+        console.log(`Total triggers: ${this.triggerPhrases.length}`);
         
-        this.triggerPhrases.forEach(trigger => {
-            if (trigger.audioUrl && !this.audioElements.has(trigger.id)) {
-                try {
-                    const audio = new Audio(trigger.audioUrl);
-                    audio.preload = 'auto';
-                    audio.volume = 1;
-                    
-                    // Store trigger info on audio element for debugging
-                    audio._triggerPhrase = trigger.phrase;
-                    audio._triggerId = trigger.id;
-                    
-                    // Store for later use
-                    this.audioElements.set(trigger.id, audio);
-                    console.log(`Audio element pre-loaded for: ${trigger.phrase} (ID: ${trigger.id})`);
-                } catch (error) {
-                    console.warn(`Error pre-loading audio for ${trigger.phrase}:`, error);
-                }
+        let preloadedCount = 0;
+        let skippedCount = 0;
+        
+        this.triggerPhrases.forEach((trigger, index) => {
+            console.log(`Trigger ${index + 1}: phrase="${trigger.phrase}", audioUrl="${trigger.audioUrl}", id=${trigger.id}`);
+            
+            if (!trigger.audioUrl) {
+                console.warn(`  ⚠️ No audioUrl for trigger: ${trigger.phrase}`);
+                skippedCount++;
+                return;
+            }
+            
+            if (this.audioElements.has(trigger.id)) {
+                console.log(`  ⏭️ Audio element already exists for: ${trigger.phrase}`);
+                return;
+            }
+            
+            try {
+                const audio = new Audio(trigger.audioUrl);
+                audio.preload = 'auto';
+                audio.volume = 1;
+                
+                // Store trigger info on audio element for debugging
+                audio._triggerPhrase = trigger.phrase;
+                audio._triggerId = trigger.id;
+                
+                // Store for later use
+                this.audioElements.set(trigger.id, audio);
+                preloadedCount++;
+                console.log(`  ✅ Audio element pre-loaded for: ${trigger.phrase} (ID: ${trigger.id}, URL: ${trigger.audioUrl})`);
+            } catch (error) {
+                console.warn(`  ❌ Error pre-loading audio for ${trigger.phrase}:`, error);
+                skippedCount++;
             }
         });
         
-        console.log(`✅ Pre-loaded ${this.audioElements.size} audio elements`);
+        console.log(`✅ Pre-loaded ${preloadedCount} audio elements, ${skippedCount} skipped, total in cache: ${this.audioElements.size}`);
     }
 
     async unlockAudioForIOS() {
