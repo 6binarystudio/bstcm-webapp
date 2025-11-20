@@ -17,6 +17,7 @@ class SpeechRecognitionApp {
         this.triggerDetectedInCurrentSession = false;
         this.detectedTrigger = null; // Store which trigger was detected
         this.lastProcessedResultIndex = -1; // Track the last result index we processed to avoid duplicates
+        this.isCumulativePlatform = null; // Track if platform uses cumulative results (Android) or incremental (iPhone/Laptop)
         
         this.initializeElements();
         this.setupEventListeners();
@@ -718,16 +719,49 @@ class SpeechRecognitionApp {
                     const currentLower = this.currentTranscript.toLowerCase().trim();
                     const transcriptLower = transcript.toLowerCase();
                     
-                    // Detect platform behavior: if transcript starts with current, it's cumulative (Android)
-                    // Otherwise, it's incremental (iPhone/Laptop) and we use it as-is
-                    if (currentLower && transcriptLower.startsWith(currentLower)) {
+                    // Detect platform behavior on first final result
+                    // Android: Results are cumulative (each contains full transcript so far)
+                    // iPhone/Laptop: Results are incremental (each contains only new text)
+                    if (this.isCumulativePlatform === null && currentLower) {
+                        // First time detecting - check if transcript is clearly cumulative
+                        // Cumulative: transcript contains ALL of current + new text
+                        // We check if transcript is significantly longer AND contains current as a complete prefix
+                        const currentWords = currentLower.split(/\s+/);
+                        const transcriptWords = transcriptLower.split(/\s+/);
+                        const isLonger = transcriptWords.length > currentWords.length;
+                        const hasAllCurrentWords = currentWords.every((word, idx) => transcriptWords[idx] === word);
+                        
+                        // Only mark as cumulative if transcript is clearly longer and contains all current words in order
+                        this.isCumulativePlatform = isLonger && hasAllCurrentWords && transcriptWords.length > currentWords.length + 1;
+                        console.log('Platform detection:', this.isCumulativePlatform ? 'Cumulative (Android)' : 'Incremental (iPhone/Laptop)', {
+                            currentWords: currentWords.length,
+                            transcriptWords: transcriptWords.length,
+                            hasAllCurrentWords
+                        });
+                    }
+                    
+                    if (this.isCumulativePlatform && currentLower) {
                         // Android: cumulative - extract only new part
-                        const newPart = transcript.substring(this.currentTranscript.length).trim();
-                        if (newPart) {
+                        const currentWords = currentLower.split(/\s+/);
+                        const transcriptWords = transcriptLower.split(/\s+/);
+                        
+                        // Find where new words start
+                        let startIndex = 0;
+                        for (let i = 0; i < Math.min(transcriptWords.length, currentWords.length); i++) {
+                            if (transcriptWords[i] === currentWords[i]) {
+                                startIndex = i + 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        
+                        if (startIndex < transcriptWords.length) {
+                            const newPart = transcriptWords.slice(startIndex).join(' ');
                             finalTranscript += newPart + ' ';
                         }
                     } else {
                         // iPhone/Laptop: incremental - use as-is (it's already new text)
+                        // Or first result when currentTranscript is empty
                         finalTranscript += transcript + ' ';
                     }
                 }
@@ -741,29 +775,16 @@ class SpeechRecognitionApp {
                 const currentLower = this.currentTranscript.toLowerCase().trim();
                 const fullInterimLower = fullInterim.toLowerCase();
                 
-                // Extract only new part beyond final transcript
-                if (currentLower && fullInterimLower.startsWith(currentLower)) {
-                    // Cumulative - extract new part
+                if (this.isCumulativePlatform && currentLower && fullInterimLower.startsWith(currentLower)) {
+                    // Android: cumulative - extract new part
                     interimTranscript = fullInterim.substring(this.currentTranscript.length).trim();
                 } else {
-                    // Incremental or new - use as-is, but remove any overlap with final
-                    const currentWords = this.currentTranscript.trim().split(/\s+/);
-                    const interimWords = fullInterim.split(/\s+/);
-                    
-                    // Remove words that are already in final transcript
-                    let startIndex = 0;
-                    for (let i = 0; i < Math.min(interimWords.length, currentWords.length); i++) {
-                        if (interimWords[i].toLowerCase() === currentWords[i].toLowerCase()) {
-                            startIndex = i + 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    
-                    if (startIndex < interimWords.length) {
-                        interimTranscript = interimWords.slice(startIndex).join(' ');
-                    } else if (!currentLower) {
-                        // No final transcript yet, show all interim
+                    // iPhone/Laptop: incremental - use as-is, but check for overlap
+                    if (currentLower && fullInterimLower.startsWith(currentLower)) {
+                        // Has overlap - extract new part
+                        interimTranscript = fullInterim.substring(this.currentTranscript.length).trim();
+                    } else {
+                        // No overlap or no current transcript - use as-is
                         interimTranscript = fullInterim;
                     }
                 }
@@ -782,8 +803,10 @@ class SpeechRecognitionApp {
             this.resetPauseTimer();
         }
         
-        // If we have final results, check for trigger phrases
+        // If we have final results, clear any interim display and check for trigger phrases
         if (hasFinalResult) {
+            // Clear interim when we get final results (prevents Android from showing old interim after pause)
+            interimTranscript = '';
             // Prioritize checking the NEW final transcript first (most recent speech)
             // This prevents matching old triggers from earlier in the conversation
             const newFinalLower = finalTranscript.toLowerCase().trim();
