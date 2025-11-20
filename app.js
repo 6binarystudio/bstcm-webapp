@@ -726,38 +726,48 @@ class SpeechRecognitionApp {
                         // First time detecting - check if transcript is clearly cumulative
                         // Cumulative: transcript contains ALL of current + new text
                         // We check if transcript is significantly longer AND contains current as a complete prefix
-                        const currentWords = currentLower.split(/\s+/);
-                        const transcriptWords = transcriptLower.split(/\s+/);
+                        const currentWords = currentLower.split(/\s+/).filter(w => w.length > 0);
+                        const transcriptWords = transcriptLower.split(/\s+/).filter(w => w.length > 0);
                         const isLonger = transcriptWords.length > currentWords.length;
-                        const hasAllCurrentWords = currentWords.every((word, idx) => transcriptWords[idx] === word);
+                        const hasAllCurrentWords = currentWords.length > 0 && 
+                            currentWords.every((word, idx) => idx < transcriptWords.length && transcriptWords[idx] === word);
                         
                         // Only mark as cumulative if transcript is clearly longer and contains all current words in order
-                        this.isCumulativePlatform = isLonger && hasAllCurrentWords && transcriptWords.length > currentWords.length + 1;
+                        this.isCumulativePlatform = isLonger && hasAllCurrentWords && transcriptWords.length > currentWords.length;
                         console.log('Platform detection:', this.isCumulativePlatform ? 'Cumulative (Android)' : 'Incremental (iPhone/Laptop)', {
                             currentWords: currentWords.length,
                             transcriptWords: transcriptWords.length,
-                            hasAllCurrentWords
+                            hasAllCurrentWords,
+                            currentText: currentLower.substring(0, 50),
+                            transcriptText: transcriptLower.substring(0, 50)
                         });
                     }
                     
                     if (this.isCumulativePlatform && currentLower) {
-                        // Android: cumulative - extract only new part
-                        const currentWords = currentLower.split(/\s+/);
-                        const transcriptWords = transcriptLower.split(/\s+/);
+                        // Android: cumulative - extract only new part using word-by-word comparison
+                        const currentWords = currentLower.split(/\s+/).filter(w => w.length > 0);
+                        const transcriptWords = transcriptLower.split(/\s+/).filter(w => w.length > 0);
                         
-                        // Find where new words start
+                        // Find where new words start by comparing word by word
                         let startIndex = 0;
-                        for (let i = 0; i < Math.min(transcriptWords.length, currentWords.length); i++) {
-                            if (transcriptWords[i] === currentWords[i]) {
-                                startIndex = i + 1;
+                        for (let j = 0; j < Math.min(transcriptWords.length, currentWords.length); j++) {
+                            if (transcriptWords[j] === currentWords[j]) {
+                                startIndex = j + 1;
                             } else {
                                 break;
                             }
                         }
                         
+                        // Extract only the new words
                         if (startIndex < transcriptWords.length) {
-                            const newPart = transcriptWords.slice(startIndex).join(' ');
-                            finalTranscript += newPart + ' ';
+                            const newWords = transcriptWords.slice(startIndex);
+                            // Reconstruct the original text with proper spacing
+                            const originalWords = transcript.split(/\s+/).filter(w => w.length > 0);
+                            const newPart = originalWords.slice(startIndex).join(' ');
+                            if (newPart) {
+                                finalTranscript += newPart + ' ';
+                                console.log('Android: Extracted new part:', newPart, 'from full:', transcript);
+                            }
                         }
                     } else {
                         // iPhone/Laptop: incremental - use as-is (it's already new text)
@@ -775,9 +785,26 @@ class SpeechRecognitionApp {
                 const currentLower = this.currentTranscript.toLowerCase().trim();
                 const fullInterimLower = fullInterim.toLowerCase();
                 
-                if (this.isCumulativePlatform && currentLower && fullInterimLower.startsWith(currentLower)) {
-                    // Android: cumulative - extract new part
-                    interimTranscript = fullInterim.substring(this.currentTranscript.length).trim();
+                if (this.isCumulativePlatform && currentLower) {
+                    // Android: cumulative - extract new part using word-by-word comparison
+                    const currentWords = currentLower.split(/\s+/).filter(w => w.length > 0);
+                    const interimWords = fullInterimLower.split(/\s+/).filter(w => w.length > 0);
+                    
+                    // Find where new words start
+                    let startIndex = 0;
+                    for (let j = 0; j < Math.min(interimWords.length, currentWords.length); j++) {
+                        if (interimWords[j] === currentWords[j]) {
+                            startIndex = j + 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    
+                    // Extract only the new words
+                    if (startIndex < interimWords.length) {
+                        const originalInterimWords = fullInterim.split(/\s+/).filter(w => w.length > 0);
+                        interimTranscript = originalInterimWords.slice(startIndex).join(' ');
+                    }
                 } else {
                     // iPhone/Laptop: incremental - use as-is, but check for overlap
                     if (currentLower && fullInterimLower.startsWith(currentLower)) {
@@ -1460,10 +1487,42 @@ class SpeechRecognitionApp {
             const currentLower = this.currentTranscript.toLowerCase().trim();
             const interimLower = interimTrimmed.toLowerCase();
             
-            // Only show if interim is not already part of the final transcript
-            // On Android, interim might be cumulative, so we check if it's already shown
-            if (!currentLower.includes(interimLower)) {
-                html += `<span class="word highlight">${interimTrimmed}</span>`;
+            // Check if interim is already in final transcript
+            // For Android (cumulative), interim might contain words already in final
+            if (this.isCumulativePlatform && currentLower) {
+                // Word-by-word check: only show words that aren't already in final
+                const currentWords = currentLower.split(/\s+/).filter(w => w.length > 0);
+                const interimWords = interimLower.split(/\s+/).filter(w => w.length > 0);
+                const originalInterimWords = interimTrimmed.split(/\s+/).filter(w => w.length > 0);
+                
+                // Find words that are new (not in final)
+                const newWords = [];
+                for (let i = 0; i < interimWords.length; i++) {
+                    // Check if this word is already in final (checking from the end to avoid matching old words)
+                    const word = interimWords[i];
+                    let isInFinal = false;
+                    
+                    // Check if word appears in final transcript after the last matched position
+                    for (let j = currentWords.length - 1; j >= 0; j--) {
+                        if (currentWords[j] === word) {
+                            isInFinal = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!isInFinal) {
+                        newWords.push(originalInterimWords[i]);
+                    }
+                }
+                
+                if (newWords.length > 0) {
+                    html += `<span class="word highlight">${newWords.join(' ')}</span>`;
+                }
+            } else {
+                // iPhone/Laptop: simple check - only show if not already in final
+                if (!currentLower.includes(interimLower)) {
+                    html += `<span class="word highlight">${interimTrimmed}</span>`;
+                }
             }
         }
 
