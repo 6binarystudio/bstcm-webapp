@@ -404,6 +404,129 @@ header h1 {
     }
 }
 
+/* Debug Console Panel */
+.debug-panel {
+    background: #1e1e1e;
+    border-radius: 12px;
+    padding: 15px;
+    margin-bottom: 20px;
+    border: 2px solid #333;
+    max-height: 400px;
+    display: flex;
+    flex-direction: column;
+}
+
+.debug-panel.collapsed {
+    max-height: 50px;
+    overflow: hidden;
+}
+
+.debug-panel.collapsed .debug-log {
+    display: none;
+}
+
+.debug-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+    flex-shrink: 0;
+}
+
+.debug-header h2 {
+    color: #4ade80;
+    margin: 0;
+    font-size: 1.2em;
+}
+
+.btn-debug-toggle,
+.btn-debug-clear {
+    background: #333;
+    color: #fff;
+    border: 1px solid #555;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85em;
+    margin-left: 8px;
+}
+
+.btn-debug-toggle:hover,
+.btn-debug-clear:hover {
+    background: #444;
+}
+
+.debug-log {
+    background: #0d1117;
+    border-radius: 8px;
+    padding: 10px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85em;
+    color: #c9d1d9;
+    max-height: 300px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    line-height: 1.4;
+    flex: 1;
+}
+
+.debug-log::-webkit-scrollbar {
+    width: 8px;
+}
+
+.debug-log::-webkit-scrollbar-track {
+    background: #161b22;
+    border-radius: 4px;
+}
+
+.debug-log::-webkit-scrollbar-thumb {
+    background: #30363d;
+    border-radius: 4px;
+}
+
+.debug-log::-webkit-scrollbar-thumb:hover {
+    background: #484f58;
+}
+
+.debug-entry {
+    margin-bottom: 6px;
+    padding: 4px 8px;
+    border-left: 3px solid transparent;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+}
+
+.debug-entry.log {
+    border-left-color: #58a6ff;
+    color: #c9d1d9;
+}
+
+.debug-entry.info {
+    border-left-color: #58a6ff;
+    color: #79c0ff;
+}
+
+.debug-entry.warn {
+    border-left-color: #d29922;
+    color: #e3b341;
+}
+
+.debug-entry.error {
+    border-left-color: #f85149;
+    color: #ff7b72;
+}
+
+.debug-entry.success {
+    border-left-color: #3fb950;
+    color: #4ade80;
+}
+
+.debug-timestamp {
+    color: #6e7681;
+    font-size: 0.75em;
+    margin-right: 8px;
+}
+
 @media (max-width: 768px) {
     .settings {
         grid-template-columns: 1fr;
@@ -429,6 +552,25 @@ header h1 {
 
     .btn-remove {
         width: 100%;
+    }
+
+    .debug-panel {
+        max-height: 300px;
+    }
+
+    .debug-log {
+        max-height: 200px;
+        font-size: 0.75em;
+    }
+
+    .debug-header {
+        flex-wrap: wrap;
+    }
+
+    .btn-debug-toggle,
+    .btn-debug-clear {
+        font-size: 0.75em;
+        padding: 4px 8px;
     }
 }
 

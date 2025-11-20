@@ -36,6 +36,13 @@ class SpeechRecognitionApp {
         this.transcriptDiv = document.getElementById('transcript');
         this.triggerLog = document.getElementById('triggerLog');
         this.pauseDurationInput = document.getElementById('pauseDuration');
+        this.debugLog = document.getElementById('debugLog');
+        this.debugPanel = document.getElementById('debugPanel');
+        this.toggleDebugBtn = document.getElementById('toggleDebug');
+        this.clearDebugBtn = document.getElementById('clearDebug');
+        
+        // Initialize debug console
+        this.setupDebugConsole();
     }
 
     setupEventListeners() {
@@ -45,6 +52,91 @@ class SpeechRecognitionApp {
         this.pauseDurationInput.addEventListener('change', (e) => {
             this.pauseDuration = parseInt(e.target.value);
         });
+        
+        // Debug console controls
+        if (this.toggleDebugBtn) {
+            this.toggleDebugBtn.addEventListener('click', () => this.toggleDebugConsole());
+        }
+        if (this.clearDebugBtn) {
+            this.clearDebugBtn.addEventListener('click', () => this.clearDebugConsole());
+        }
+    }
+
+    setupDebugConsole() {
+        // Intercept console methods and display in debug panel
+        const originalLog = console.log;
+        const originalInfo = console.info;
+        const originalWarn = console.warn;
+        const originalError = console.error;
+
+        const addToDebugLog = (message, type = 'log') => {
+            if (!this.debugLog) return;
+            
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = `debug-entry ${type}`;
+            
+            // Format message - handle objects and arrays
+            let formattedMessage = message;
+            if (typeof message === 'object') {
+                try {
+                    formattedMessage = JSON.stringify(message, null, 2);
+                } catch (e) {
+                    formattedMessage = String(message);
+                }
+            }
+            
+            entry.innerHTML = `<span class="debug-timestamp">[${timestamp}]</span>${formattedMessage}`;
+            this.debugLog.appendChild(entry);
+            
+            // Auto-scroll to bottom
+            this.debugLog.scrollTop = this.debugLog.scrollHeight;
+            
+            // Keep only last 100 entries to prevent memory issues
+            const entries = this.debugLog.querySelectorAll('.debug-entry');
+            if (entries.length > 100) {
+                entries[0].remove();
+            }
+        };
+
+        console.log = (...args) => {
+            originalLog.apply(console, args);
+            addToDebugLog(args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' '), 'log');
+        };
+
+        console.info = (...args) => {
+            originalInfo.apply(console, args);
+            addToDebugLog(args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' '), 'info');
+        };
+
+        console.warn = (...args) => {
+            originalWarn.apply(console, args);
+            addToDebugLog(args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' '), 'warn');
+        };
+
+        console.error = (...args) => {
+            originalError.apply(console, args);
+            addToDebugLog(args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' '), 'error');
+        };
+
+        // Add success method
+        console.success = (...args) => {
+            originalLog.apply(console, args);
+            addToDebugLog(args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' '), 'success');
+        };
+    }
+
+    toggleDebugConsole() {
+        if (this.debugPanel) {
+            this.debugPanel.classList.toggle('collapsed');
+            this.toggleDebugBtn.textContent = this.debugPanel.classList.contains('collapsed') ? 'Show' : 'Hide';
+        }
+    }
+
+    clearDebugConsole() {
+        if (this.debugLog) {
+            this.debugLog.innerHTML = '';
+        }
     }
 
     loadDefaultTriggers() {
