@@ -695,324 +695,136 @@ class SpeechRecognitionApp {
     }
 
     handleRecognitionResult(event) {
-        // Handle results - detect if platform uses cumulative (Android) or incremental (iPhone/Laptop) results
-        let interimTranscript = '';
-        let finalTranscript = '';
-        let hasFinalResult = false;
-        let hasInterimResult = false;
-
-        // Find the last interim result index
-        let lastInterimIndex = -1;
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-            if (!event.results[i].isFinal) {
-                lastInterimIndex = i;
-                hasInterimResult = true;
-            } else {
-                hasFinalResult = true;
-            }
-        }
-
-        // Process final results
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-            const result = event.results[i];
-            if (result.isFinal) {
-                const transcript = result[0].transcript.trim();
-                if (transcript) {
-                    const currentLower = this.currentTranscript.toLowerCase().trim();
-                    const transcriptLower = transcript.toLowerCase();
-                    
-                    // Detect platform behavior on first final result
-                    // Android: Results are cumulative (each contains full transcript so far)
-                    // iPhone/Laptop: Results are incremental (each contains only new text)
-                    if (this.isCumulativePlatform === null && currentLower) {
-                        // First time detecting - check if transcript is clearly cumulative
-                        // Cumulative: transcript contains ALL of current + new text
-                        // We check if transcript is significantly longer AND contains current as a complete prefix
-                        const currentWords = currentLower.split(/\s+/).filter(w => w.length > 0);
-                        const transcriptWords = transcriptLower.split(/\s+/).filter(w => w.length > 0);
-                        const isLonger = transcriptWords.length > currentWords.length;
-                        const hasAllCurrentWords = currentWords.length > 0 && 
-                            currentWords.every((word, idx) => idx < transcriptWords.length && transcriptWords[idx] === word);
-                        
-                        // Only mark as cumulative if transcript is clearly longer and contains all current words in order
-                        this.isCumulativePlatform = isLonger && hasAllCurrentWords && transcriptWords.length > currentWords.length;
-                        console.log('Platform detection:', this.isCumulativePlatform ? 'Cumulative (Android)' : 'Incremental (iPhone/Laptop)', {
-                            currentWords: currentWords.length,
-                            transcriptWords: transcriptWords.length,
-                            hasAllCurrentWords,
-                            currentText: currentLower.substring(0, 50),
-                            transcriptText: transcriptLower.substring(0, 50)
-                        });
-                    }
-                    
-                    if (this.isCumulativePlatform && currentLower) {
-                        // Android: cumulative - extract only new part using word-by-word comparison
-                        const currentWords = currentLower.split(/\s+/).filter(w => w.length > 0);
-                        const transcriptWords = transcriptLower.split(/\s+/).filter(w => w.length > 0);
-                        
-                        // Find where new words start by comparing word by word
-                        let startIndex = 0;
-                        for (let j = 0; j < Math.min(transcriptWords.length, currentWords.length); j++) {
-                            if (transcriptWords[j] === currentWords[j]) {
-                                startIndex = j + 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        
-                        // Extract only the new words
-                        if (startIndex < transcriptWords.length) {
-                            const newWords = transcriptWords.slice(startIndex);
-                            // Reconstruct the original text with proper spacing
-                            const originalWords = transcript.split(/\s+/).filter(w => w.length > 0);
-                            const newPart = originalWords.slice(startIndex).join(' ');
-                            if (newPart) {
-                                finalTranscript += newPart + ' ';
-                                console.log('Android: Extracted new part:', newPart, 'from full:', transcript);
-                            }
-                        }
-                    } else {
-                        // iPhone/Laptop: incremental - use as-is (it's already new text)
-                        // Or first result when currentTranscript is empty
-                        finalTranscript += transcript + ' ';
-                    }
-                }
-            }
-        }
-
-        // Process interim result (only the last/most complete one)
-        if (lastInterimIndex >= 0) {
-            const fullInterim = event.results[lastInterimIndex][0].transcript.trim();
-            if (fullInterim) {
-                const currentLower = this.currentTranscript.toLowerCase().trim();
-                const fullInterimLower = fullInterim.toLowerCase();
-                
-                if (this.isCumulativePlatform && currentLower) {
-                    // Android: cumulative - extract new part using word-by-word comparison
-                    const currentWords = currentLower.split(/\s+/).filter(w => w.length > 0);
-                    const interimWords = fullInterimLower.split(/\s+/).filter(w => w.length > 0);
-                    
-                    // Find where new words start
-                    let startIndex = 0;
-                    for (let j = 0; j < Math.min(interimWords.length, currentWords.length); j++) {
-                        if (interimWords[j] === currentWords[j]) {
-                            startIndex = j + 1;
-                        } else {
-                            break;
-                        }
-                    }
-                    
-                    // Extract only the new words
-                    if (startIndex < interimWords.length) {
-                        const originalInterimWords = fullInterim.split(/\s+/).filter(w => w.length > 0);
-                        interimTranscript = originalInterimWords.slice(startIndex).join(' ');
-                    }
-                } else {
-                    // iPhone/Laptop: incremental - use as-is, but check for overlap
-                    if (currentLower && fullInterimLower.startsWith(currentLower)) {
-                        // Has overlap - extract new part
-                        interimTranscript = fullInterim.substring(this.currentTranscript.length).trim();
-                    } else {
-                        // No overlap or no current transcript - use as-is
-                        interimTranscript = fullInterim;
-                    }
-                }
-            }
-        }
-
-        // Buffer final results and only display after pause (no interim results for a period)
-        if (finalTranscript) {
-            // Add to pending buffer
-            this.pendingFinalTranscript += finalTranscript + ' ';
-            this.lastSpeechTime = Date.now();
+        // Always use only the last result index
+        const lastIndex = event.results.length - 1;
+        if (lastIndex < 0) return;
+        
+        const lastResult = event.results[lastIndex];
+        const isFinal = lastResult.isFinal;
+        const transcript = lastResult[0].transcript.trim();
+        
+        if (!transcript) return;
+        
+        // Always replace transcript instead of appending
+        // Use the full transcript from the last result
+        const fullTranscript = transcript;
+        
+        // If we have interim results, we're still speaking - don't display yet
+        if (!isFinal) {
+            // Still speaking - update display with current interim result (replace, don't append)
+            this.updateTranscript('', fullTranscript);
+            return;
         }
         
-        // If we have interim results, we're still speaking - clear pause timer and don't display yet
-        if (hasInterimResult) {
+        // Final result - replace transcript and display after a short pause check
+        // Clear any existing pause check timer
+        if (this.pauseCheckTimer) {
+            clearTimeout(this.pauseCheckTimer);
+        }
+        
+        // Buffer the final result and display after a pause
+        this.pendingFinalTranscript = fullTranscript;
+        
+        // Set timer to display after short delay (ensures pause is real)
+        this.pauseCheckTimer = setTimeout(() => {
+            if (this.pendingFinalTranscript.trim()) {
+                const finalToDisplay = this.pendingFinalTranscript.trim();
+                this.processFinalTranscript(finalToDisplay);
+                this.updateTranscript(finalToDisplay, ''); // Replace transcript with final result
+                this.pendingFinalTranscript = ''; // Clear buffer
+                console.log('Displayed final transcript after pause:', finalToDisplay);
+            }
+            this.pauseCheckTimer = null;
+        }, 300); // 300ms delay to ensure pause is real
+        
+        // Check for trigger phrases in the final transcript
+        const transcriptLower = fullTranscript.toLowerCase().trim();
+        
+        console.log('🔍 Checking transcript for triggers:');
+        console.log('  - Final transcript:', `"${transcriptLower}"`);
+        console.log('  - Available triggers:', this.triggerPhrases.map(t => `"${t.phrase}"`));
+        
+        // Check for trigger phrases
+        let matchedTrigger = null;
+        
+        for (const trigger of this.triggerPhrases) {
+            const triggerLower = trigger.phrase.toLowerCase().trim();
+            
+            // Method 1: Exact phrase match (most reliable)
+            if (transcriptLower.includes(triggerLower)) {
+                matchedTrigger = trigger;
+                console.log(`✅ MATCH FOUND (exact phrase)! Trigger: "${trigger.phrase}"`);
+                console.log(`   - Found in: "${transcriptLower}"`);
+                break;
+            }
+            
+            // Method 2: Word boundary match (more flexible but still strict)
+            const transcriptWords = transcriptLower.split(/\s+/).map(w => w.replace(/[.,!?;:]/g, '').toLowerCase());
+            const triggerWords = triggerLower.split(/\s+/).map(tw => tw.replace(/[.,!?;:]/g, '').toLowerCase());
+            
+            // Find if all trigger words appear in order in the transcript
+            let wordIndex = 0;
+            let allWordsFound = true;
+            for (const triggerWord of triggerWords) {
+                let found = false;
+                // Look for this word starting from where we left off
+                for (let i = wordIndex; i < transcriptWords.length; i++) {
+                    const word = transcriptWords[i];
+                    // Exact word match (not partial)
+                    if (word === triggerWord) {
+                        found = true;
+                        wordIndex = i + 1; // Move to next position
+                        break;
+                    }
+                }
+                if (!found) {
+                    allWordsFound = false;
+                    break;
+                }
+            }
+            
+            if (allWordsFound && triggerWords.length > 0) {
+                matchedTrigger = trigger;
+                console.log(`✅ MATCH FOUND (word sequence)! Trigger: "${trigger.phrase}"`);
+                console.log(`   - Words matched in order: ${triggerWords.join(' -> ')}`);
+                break;
+            }
+        }
+        
+        if (matchedTrigger) {
+            // Trigger phrase detected - log it
+            this.detectedTrigger = matchedTrigger;
+            this.handleTriggerDetected(transcriptLower, matchedTrigger.phrase);
+            this.triggerDetectedInCurrentSession = true;
+            console.log('📝 Trigger logged in trigger events');
+            
+            // Clear transcript history immediately when trigger is detected
+            // This prevents the same trigger from being detected again from accumulated transcript
+            console.log('🧹 Clearing transcript history after trigger detection:', matchedTrigger.phrase);
+            this.currentTranscript = '';
+            this.words = [];
+            this.pendingFinalTranscript = ''; // Clear buffered transcript too
+            this.transcriptDiv.innerHTML = '';
+            
+            // Start pause timer for audio playback
             this.resetPauseTimer();
-            // Clear any pending pause check
-            if (this.pauseCheckTimer) {
-                clearTimeout(this.pauseCheckTimer);
-                this.pauseCheckTimer = null;
-            }
-            // Don't update transcript while still speaking, but continue to check for triggers
-        }
-        
-        // No interim results - we have a pause
-        // Wait a bit to ensure no more results are coming, then display buffered final results
-        if (this.pendingFinalTranscript && !hasInterimResult) {
-            // Clear any existing pause check timer
-            if (this.pauseCheckTimer) {
-                clearTimeout(this.pauseCheckTimer);
-            }
-            
-            // Set timer to display after short delay (ensures pause is real)
-            this.pauseCheckTimer = setTimeout(() => {
-                if (this.pendingFinalTranscript.trim()) {
-                    const finalToDisplay = this.pendingFinalTranscript.trim();
-                    this.processFinalTranscript(finalToDisplay);
-                    this.updateTranscript(finalToDisplay, ''); // Display buffered final results
-                    this.pendingFinalTranscript = ''; // Clear buffer
-                    console.log('Displayed buffered final transcript after pause:', finalToDisplay);
-                }
-                this.pauseCheckTimer = null;
-            }, 300); // 300ms delay to ensure pause is real
-        }
-        
-        // If we have final results, check for trigger phrases
-        // Use the buffered final transcript for trigger detection (includes all words spoken so far)
-        if (hasFinalResult) {
-            // Use combined pending + new final transcript for trigger detection
-            const combinedFinal = (this.pendingFinalTranscript + finalTranscript).trim();
-            // Prioritize checking the NEW final transcript first (most recent speech)
-            // This prevents matching old triggers from earlier in the conversation
-            const newFinalLower = combinedFinal.toLowerCase().trim();
-            const fullTranscript = (this.currentTranscript + combinedFinal).toLowerCase().trim();
-            
-            console.log('🔍 Checking transcript for triggers:');
-            console.log('  - New final transcript (PRIORITY):', `"${newFinalLower}"`);
-            console.log('  - Full accumulated transcript:', `"${fullTranscript}"`);
-            console.log('  - Available triggers:', this.triggerPhrases.map(t => `"${t.phrase}"`));
-            
-            // Debug: Check if "the peacock" appears anywhere
-            if (newFinalLower.includes('peacock') || fullTranscript.includes('peacock')) {
-                console.warn('⚠️ WARNING: Found "peacock" in transcript!');
-                console.warn('   - In new final:', newFinalLower.includes('peacock'));
-                console.warn('   - In full:', fullTranscript.includes('peacock'));
-            } else {
-                console.log('✓ Confirmed: "peacock" NOT in transcript');
-            }
-            
-            // First, check the NEW final transcript chunk (most recent speech)
-            // This ensures we match what was just said, not old text
-            let matchedTrigger = null;
-            let matchFoundInNew = false;
-            
-            // Check new final transcript first (highest priority)
-            // Use strict matching - only match complete phrases, not partial words
-            for (const trigger of this.triggerPhrases) {
-                const triggerLower = trigger.phrase.toLowerCase().trim();
-                
-                // Method 1: Exact phrase match (most reliable)
-                // Check if transcript contains the complete trigger phrase as a substring
-                if (newFinalLower.includes(triggerLower)) {
-                    matchedTrigger = trigger;
-                    matchFoundInNew = true;
-                    console.log(`✅ MATCH FOUND (exact phrase) in NEW transcript! Trigger: "${trigger.phrase}"`);
-                    console.log(`   - Found in: "${newFinalLower}"`);
-                    break;
-                }
-                
-                // Method 2: Word boundary match (more flexible but still strict)
-                // Match all words of the trigger phrase in order, but allow word boundaries
-                const newWords = newFinalLower.split(/\s+/).map(w => w.replace(/[.,!?;:]/g, '').toLowerCase());
-                const triggerWords = triggerLower.split(/\s+/).map(tw => tw.replace(/[.,!?;:]/g, '').toLowerCase());
-                
-                // Find if all trigger words appear in order in the transcript
-                let wordIndex = 0;
-                let allWordsFound = true;
-                for (const triggerWord of triggerWords) {
-                    let found = false;
-                    // Look for this word starting from where we left off
-                    for (let i = wordIndex; i < newWords.length; i++) {
-                        const word = newWords[i];
-                        // Exact word match (not partial)
-                        if (word === triggerWord) {
-                            found = true;
-                            wordIndex = i + 1; // Move to next position
-                            break;
-                        }
-                    }
-                    if (!found) {
-                        allWordsFound = false;
-                        break;
-                    }
-                }
-                
-                if (allWordsFound && triggerWords.length > 0) {
-                    matchedTrigger = trigger;
-                    matchFoundInNew = true;
-                    console.log(`✅ MATCH FOUND (word sequence) in NEW transcript! Trigger: "${trigger.phrase}"`);
-                    console.log(`   - Words matched in order: ${triggerWords.join(' -> ')}`);
-                    break;
-                }
-            }
-            
-            // If no match in new transcript, check full transcript (fallback)
-            // But only check the recent portion to avoid matching old triggers
-            if (!matchedTrigger) {
-                // Only check the last portion of the transcript (last 200 characters)
-                const recentTranscript = fullTranscript.slice(-200).toLowerCase();
-                
-                for (const trigger of this.triggerPhrases) {
-                    const triggerLower = trigger.phrase.toLowerCase().trim();
-                    
-                    // Only check recent portion of transcript
-                    if (recentTranscript.includes(triggerLower)) {
-                        matchedTrigger = trigger;
-                        console.log(`✅ MATCH FOUND in recent transcript! Trigger: "${trigger.phrase}"`);
-                        console.log(`   - Found in recent portion: "${recentTranscript}"`);
-                        break;
-                    }
-                }
-            }
-            
-            if (matchedTrigger) {
-                // Double-check: Verify the trigger phrase actually exists in the transcript
-                const triggerLower = matchedTrigger.phrase.toLowerCase().trim();
-                const actuallyInTranscript = newFinalLower.includes(triggerLower) || 
-                                            fullTranscript.slice(-200).includes(triggerLower);
-                
-                if (!actuallyInTranscript) {
-                    console.error('❌ ERROR: Trigger matched but phrase not found in transcript!');
-                    console.error('   - Matched trigger:', matchedTrigger.phrase);
-                    console.error('   - New transcript:', newFinalLower);
-                    console.error('   - This should not happen - skipping trigger');
-                    matchedTrigger = null; // Don't use this match
+            console.log(`⏱️ Starting pause timer (${this.pauseDuration}ms) for trigger: "${matchedTrigger.phrase}"`);
+            this.pauseTimer = setTimeout(() => {
+                if (this.isListening && !this.isPlaying) {
+                    console.log('⏱️ Pause timer expired, playing audio for:', matchedTrigger.phrase);
+                    this.playAudioForTrigger(matchedTrigger);
+                    this.triggerDetectedInCurrentSession = false;
+                    this.detectedTrigger = null;
                 } else {
-                    // Trigger phrase detected - log it
-                    if (!this.triggerDetectedInCurrentSession || matchFoundInNew) {
-                        this.detectedTrigger = matchedTrigger;
-                        this.handleTriggerDetected(newFinalLower, matchedTrigger.phrase);
-                        this.triggerDetectedInCurrentSession = true;
-                        console.log('📝 Trigger logged in trigger events');
-                    }
+                    console.log('⚠️ Cannot play audio - isListening:', this.isListening, 'isPlaying:', this.isPlaying);
                 }
-            }
-            
-            if (matchedTrigger) {
-                // Clear transcript history immediately when trigger is detected
-                // This prevents the same trigger from being detected again from accumulated transcript
-                console.log('🧹 Clearing transcript history after trigger detection:', matchedTrigger.phrase);
-                this.currentTranscript = '';
-                this.words = [];
-                this.pendingFinalTranscript = ''; // Clear buffered transcript too
-                this.transcriptDiv.innerHTML = '';
-                
-                // If no interim results, we might be pausing - start timer
-                if (!hasInterimResult) {
-                    this.resetPauseTimer();
-                    console.log(`⏱️ Starting pause timer (${this.pauseDuration}ms) for trigger: "${matchedTrigger.phrase}"`);
-                    this.pauseTimer = setTimeout(() => {
-                        if (this.isListening && !this.isPlaying) {
-                            console.log('⏱️ Pause timer expired, playing audio for:', matchedTrigger.phrase);
-                            this.playAudioForTrigger(matchedTrigger);
-                            this.triggerDetectedInCurrentSession = false;
-                            this.detectedTrigger = null;
-                        } else {
-                            console.log('⚠️ Cannot play audio - isListening:', this.isListening, 'isPlaying:', this.isPlaying);
-                        }
-                    }, this.pauseDuration);
-                } else {
-                    console.log('⏸️ Still speaking (interim results), waiting for pause...');
-                }
-            } else {
-                // No trigger in this chunk, reset trigger flag
-                console.log('❌ No trigger match found');
-                console.log('   - Checked new transcript:', newFinalLower);
-                this.triggerDetectedInCurrentSession = false;
-                this.detectedTrigger = null;
-            }
+            }, this.pauseDuration);
+        } else {
+            // No trigger in this chunk, reset trigger flag
+            console.log('❌ No trigger match found');
+            console.log('   - Checked transcript:', transcriptLower);
+            this.triggerDetectedInCurrentSession = false;
+            this.detectedTrigger = null;
         }
     }
 
@@ -1494,21 +1306,26 @@ class SpeechRecognitionApp {
     }
 
     updateTranscript(final, interim) {
-        // Only update transcript when we have final results (after pause)
-        // Don't show interim results - wait for complete sentences
+        // Always replace transcript instead of appending
+        // If we have final text, replace the entire transcript
         if (final && final.trim()) {
-            this.currentTranscript += final.trim() + ' ';
-            this.words = this.currentTranscript.trim().split(/\s+/).filter(w => w.length > 0);
-            console.log('Final transcript added:', final.trim());
-            console.log('Current full transcript:', this.currentTranscript.trim());
+            this.currentTranscript = final.trim();
+            this.words = this.currentTranscript.split(/\s+/).filter(w => w.length > 0);
+            console.log('Final transcript replaced:', this.currentTranscript);
         }
-
-        // Build HTML display - only show final words (complete sentences)
-        // No interim results shown - they will appear when finalized after pause
-        let html = '';
         
-        // Display all final words
-        this.words.forEach((word, index) => {
+        // If we have interim text (while speaking), show it temporarily
+        // This will be replaced when final result comes in
+        const displayText = final && final.trim() ? final.trim() : (interim && interim.trim() ? interim.trim() : '');
+        
+        if (!displayText) return;
+
+        // Build HTML display - replace entire transcript
+        let html = '';
+        const words = displayText.split(/\s+/).filter(w => w.length > 0);
+        
+        // Display all words
+        words.forEach((word, index) => {
             const wordLower = word.toLowerCase().replace(/[.,!?]/g, '');
             let className = 'word';
             
@@ -1524,8 +1341,6 @@ class SpeechRecognitionApp {
             
             html += `<span class="${className}">${word}</span>`;
         });
-
-        // Don't show interim results - wait for them to become final after pause
 
         this.transcriptDiv.innerHTML = html;
         this.transcriptDiv.scrollTop = this.transcriptDiv.scrollHeight;
